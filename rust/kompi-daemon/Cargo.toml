@@ -35,5 +35,5 @@ hkdf = "0.13.0"
 hmac = "0.13.0"
 url = "2.5.8"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
-web-push = { version = "0.11.0", default-features = false }
+web-push = { package = "sad-web-push", version = "0.12.0", default-features = false }
 zeroize = { version = "1.9.1", features = ["zeroize_derive"] }

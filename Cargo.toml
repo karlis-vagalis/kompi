@@ -2,10 +2,13 @@
 members = ["rust/kompi-protocol", "rust/kompi-daemon"]
 resolver = "2"
 
+[patch.crates-io]
+iroh-tickets = { path = "third-party/iroh-tickets" }
+
 [workspace.package]
 edition = "2024"
 license = "AGPL-3.0-only"
-rust-version = "1.91"
+rust-version = "1.94"
 
 [workspace.dependencies]
 kompi-protocol = { path = "rust/kompi-protocol" }
@@ -14,7 +17,7 @@ ciborium = "0.2"
 jiff = { version = "0.2", features = ["serde"] }
 uuid = { version = "1", features = ["serde"] }
 serde_json = "1"
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "sqlite"] }
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "sqlite"] }
 schemars = { version = "1", features = ["derive"] }
 jsonschema = { version = "0.60", default-features = false }
 regex = "1"
