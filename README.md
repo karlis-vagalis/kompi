@@ -4,11 +4,12 @@
 
 There are already good ways to run a coding agent from a phone. I built Kompi (*Pi companion*) because I wanted an assistant I could talk to without turning every request into a coding task. Type a quick message, or switch to Live mode for a spoken conversation. Pi runs on your paired computer, so when you *do* want to work on code, you can pick up an existing session with its files and tools.
 
-<p>
-  <img src="docs/screenshots/chat.png" width="30%" alt="Kompi chat screen with a message field and microphone">
-  <img src="docs/screenshots/computers.png" width="30%" alt="Computers screen offering QR or pairing-code setup">
-  <img src="docs/screenshots/settings.png" width="30%" alt="Voice settings for reading Pi’s replies aloud">
-</p>
+**Demo gallery.** Android emulator screenshots with a fictional conversation and simulated paired computers.
+
+| Light | Dark |
+| --- | --- |
+| [![Light chat: Pi suggests lemony chickpeas and explains how to pack leftovers.](docs/screenshots/chat-light.png)](docs/screenshots/chat-light.png) | [![Dark chat: the same meal-planning conversation.](docs/screenshots/chat-dark.png)](docs/screenshots/chat-dark.png) |
+| [![Light Computers screen: Desk computer selected, Travel laptop also paired.](docs/screenshots/computers-light.png)](docs/screenshots/computers-light.png) | [![Dark Computers screen showing the same two trusted computers.](docs/screenshots/computers-dark.png)](docs/screenshots/computers-dark.png) |
 
 > **Development status:** Kompi is under very active development. Expect breaking changes between versions. Use it at your own risk.
 
