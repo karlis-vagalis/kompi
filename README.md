@@ -14,13 +14,13 @@ There are already good ways to run a coding agent from a phone. I built Kompi (*
 
 ## First chat
 
-1. On an x86-64 Linux computer, install and configure the Pi CLI. Check that you can get a reply in the terminal. Install Rust, Node.js 22.19+, Bun and util-linux (`flock`), then follow the [host build and launch commands](daemon/README.md).
-2. Follow the [Android build instructions](android/README.md). Install the resulting debug APK on your phone, for example with `adb -s <serial> install -r android/app/build/outputs/apk/debug/app-debug.apk` from the repository root.
-3. With the daemon running, open another terminal at the repository root and run `target/release/kompi pair`. In the app, open Computers and scan the pairing code. Send “Hello” to check the connection.
+1. On your phone, download `kompi.apk` from the [GitHub Releases page](https://github.com/karlis-vagalis/kompi/releases). Open the APK to install it. If Android asks, allow installation from the app you opened it with.
+2. On an x86-64 Linux computer with Pi, Node.js 22.19+, Bun, and `flock`, unpack `kompi-linux-x86_64.tar.gz` from the same release. Inside the extracted directory, run `(cd worker && bun install --production --frozen-lockfile)`, then `./kompi serve`.
+3. In another terminal in that directory, run `./kompi pair`. On the phone, open **Computers**, scan the code, and send “Hello”.
 
-This is a source release. Binary releases are gated pending [dependency review](daemon/DEPENDENCIES.md) and [Android redistribution review](android/dependencies.md).
+Prefer to build locally? See the [host](daemon/README.md) and [Android](android/README.md) instructions.
 
-**Access and privacy:** A paired phone can run Pi as your host user. Keep pairing codes private. Pi stores transcripts on the host; the phone caches chat data, and Pi sends requests to your configured model provider. To remove access, find the phone with `target/release/kompi devices list` and run `target/release/kompi devices revoke <endpoint>`.
+**Access and privacy:** A paired phone can run Pi as your host user. Keep pairing codes private. Pi stores transcripts on the host; the phone caches chat data, and Pi sends requests to your configured model provider. To remove access, find the phone with `./kompi devices list` and run `./kompi devices revoke <endpoint>`.
 
 **Upgrading:** Check the release notes for breaking changes and update the app and daemon together.
 
