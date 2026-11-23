@@ -57,6 +57,53 @@ class ChatOutboxBehaviorTest {
         assertFalse(database.localDao().outboxItem("host-a", "a")!!.encryptedBody.contains("Latviešu"))
     }
 
+    @Test fun finalRejectionReopensWithoutBusyReplyAndRetainsIntentBinding() = runBlocking {
+        val chat = UUID.randomUUID().toString()
+        repository.enqueue("host-a", "a", "original", "followUp", emptyList(), configuration, targetConversationId = chat)
+        assertTrue(repository.beginPromptDispatch("host-a", "a"))
+        assertTrue(repository.recordPromptRejection("host-a", "a", LocalRepository.RejectionDisposition.Remove))
+        reopen()
+        repository.enqueue("host-a", "a", "original", "followUp", emptyList(), configuration, targetConversationId = chat)
+        assertTrue(runCatching { queue("a", "different") }.isFailure)
+        assertTrue(repository.pendingPrompts("host-a").isEmpty())
+        val request = repository.requestState("host-a", "a")!!
+        assertEquals("rejected", request.outcome)
+        assertTrue(buildTranscriptProjection(com.kompi.app.transport.PiSessionStore.View(conversationId = chat),
+            emptyList(), listOf(request), emptyList()).active.none { it.pendingPhase != null })
+    }
+
+    @Test fun retryAndConversationHoldAreNotTerminalRejections() = runBlocking {
+        queue("retry"); queue("hold")
+        assertTrue(repository.beginPromptDispatch("host-a", "retry"))
+        assertTrue(repository.beginPromptDispatch("host-a", "hold"))
+        assertTrue(repository.recordPromptRejection("host-a", "retry", LocalRepository.RejectionDisposition.Retry))
+        assertTrue(repository.recordPromptRejection("host-a", "hold", LocalRepository.RejectionDisposition.Hold))
+        reopen()
+        val pending = repository.pendingPrompts("host-a")
+        assertEquals(listOf("queued", "waiting-for-conversation"), pending.map { it.state })
+        pending.forEach { assertEquals("queued", repository.requestState("host-a", it.requestId)!!.outcome) }
+    }
+
+    @Test fun corruptLegacyAttachmentIndexStillAllowsDiscard() = runBlocking {
+        queue("legacy")
+        val row = database.localDao().outboxItem("host-a", "legacy")!!
+        database.localDao().putOutbox(row.copy(encryptedBody = SecureStore(context).protect("old text"), attachmentIds = "[false]"))
+        val prompt = repository.pendingPrompts("host-a").single()
+        assertEquals("old text", prompt.text)
+        assertNull(prompt.configuration)
+        assertTrue(prompt.attachmentIds.isEmpty())
+        assertTrue(repository.discardUnacceptedPrompt("host-a", "legacy"))
+    }
+
+    @Test fun corruptAttachmentIndexUsesImmutableEncryptedIntent() = runBlocking {
+        val ids = listOf(UUID.randomUUID().toString())
+        repository.enqueue("host-a", "a", "file", "followUp", ids, configuration)
+        val row = database.localDao().outboxItem("host-a", "a")!!
+        database.localDao().putOutbox(row.copy(attachmentIds = "broken"))
+        reopen()
+        assertEquals(ids, repository.pendingPrompts("host-a").single().attachmentIds)
+    }
+
     @Test fun q3_r3_hostsWithSameRequestIdRemainIsolatedAcrossRecovery() = runBlocking {
         queue("same", "Host A instruction")
         queue("same", "Host B instruction", host = "host-b")

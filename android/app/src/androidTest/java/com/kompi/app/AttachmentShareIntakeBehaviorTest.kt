@@ -27,9 +27,7 @@ import com.kompi.app.attachments.AttachmentSharePayload
 import com.kompi.app.attachments.AttachmentShareReceipt
 import com.kompi.app.attachments.ShareIntentDeliveryTracker
 import com.kompi.app.attachments.toReceipt
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -269,8 +267,30 @@ class AttachmentShareIntakeBehaviorTest {
             }
         }
 
-        val selection = kotlinx.coroutines.runBlocking {
-            withContext(Dispatchers.IO) { AttachmentDraftStore(context).importSelection(share.uris, emptySet()) }
+        // Pause the provider lookup inside the real store's import critical section.
+        val providerEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseProvider = java.util.concurrent.CountDownLatch(1)
+        val delayed = object : ContextWrapper(context) {
+            override fun getApplicationContext(): Context = this
+            override fun getContentResolver(): android.content.ContentResolver {
+                providerEntered.countDown()
+                check(releaseProvider.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                return super.getContentResolver()
+            }
+        }
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val selection = try {
+            val importing = executor.submit<com.kompi.app.attachments.AttachmentSelectionResult> {
+                AttachmentDraftStore(delayed).importSelection(share.uris, emptySet())
+            }
+            assertTrue(providerEntered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            restoration.emulateSavedInstanceStateRestore()
+            compose.runOnIdle { assertFalse(importing.isDone) }
+            releaseProvider.countDown()
+            importing.get(10, java.util.concurrent.TimeUnit.SECONDS)
+        } finally {
+            releaseProvider.countDown()
+            executor.shutdownNow()
         }
         assertEquals(1, selection.added.size)
         val persisted = AttachmentDraftStore(context).load().single()

@@ -192,6 +192,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.StateFlow
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.NonCancellable
@@ -518,11 +519,11 @@ private fun KompiApp(
     val unsentPrompts = scopedOutbox.filter { it.hostId == selectedMachineKey && it.state != "accepted" }.map { row ->
         SecureStore.PendingPrompt(
             row.requestId,
-            localRepository.reveal(row.encryptedBody),
+            row.text,
             Delivery.parse(row.delivery),
             accepted = false,
             machineId = row.hostId,
-            attachmentIds = org.json.JSONArray(row.attachmentIds).let { values -> (0 until values.length()).map(values::getString) },
+            attachmentIds = row.attachmentIds,
             waitingForConversation = row.state == "waiting-for-conversation",
         )
     }
@@ -560,14 +561,13 @@ private fun KompiApp(
     }
     val deliveryNotices by localViewModel.notices.collectAsState()
     val pendingPiPrompts = remember(scopedOutbox, localRepository, selectedMachineKey) {
-        scopedOutbox.filter { it.hostId == selectedMachineKey }.map { it.requestId to localRepository.reveal(it.encryptedBody) }
+        scopedOutbox.filter { it.hostId == selectedMachineKey }.map { it.requestId to it.text }
     }
     val heldPromptIds = unsentPrompts.filter { it.waitingForConversation }.mapTo(mutableSetOf()) { it.id }
     val attachmentDispatchStages by transport.attachmentDispatchStages.collectAsState()
     val pendingFileIds = remember(localUiState.local.outbox, selectedMachineKey) {
         localUiState.local.outbox.filter { it.hostId == selectedMachineKey }.associate { row ->
-            val ids = org.json.JSONArray(row.attachmentIds)
-            row.requestId to (0 until ids.length()).map(ids::getString)
+            row.requestId to row.attachmentIds
         }
     }
     val pendingAttachments by produceState<Map<String, List<MessageAttachment>>>(emptyMap(), pendingFileIds) {
@@ -1249,7 +1249,7 @@ private fun KompiApp(
                 submitScope = coroutineScope,
                 unsentPrompts = unsentPrompts,
                 transientPromptIds = transientPromptIds.toSet(),
-                pendingAttachmentIds = localUiState.local.outbox.flatMap { row -> org.json.JSONArray(row.attachmentIds).let { ids -> (0 until ids.length()).map(ids::getString) } }.toSet(),
+                pendingAttachmentIds = localUiState.local.outbox.flatMap { row -> row.attachmentIds }.toSet(),
                 attachmentShareReceipt = attachmentShareReceipt,
                 attachmentShareImporting = attachmentShareImporting,
                 initialDraft = drafts.load(draftScope),
@@ -1754,7 +1754,8 @@ internal fun ConversationScreen(
     val context = LocalContext.current
     val attachmentStore = remember(context) { AttachmentDraftStore(context) }
     val importingSharedAttachments by attachmentShareImporting.collectAsState()
-    val draftAttachments = remember { mutableStateListOf<DraftAttachment>().apply { addAll(attachmentStore.loadFor(attachmentDraftScope).filterNot { it.uploadId in pendingAttachmentIds }) } }
+    val draftAttachments = remember(attachmentDraftScope) { mutableStateListOf<DraftAttachment>() }
+    var draftsLoaded by remember(attachmentDraftScope) { mutableStateOf(false) }
     LaunchedEffect(pendingAttachmentIds) {
         // Room may finish loading after the composer mounts. Outbox-owned files are not a new draft.
         draftAttachments.removeAll { it.uploadId in pendingAttachmentIds }
@@ -1774,7 +1775,7 @@ internal fun ConversationScreen(
     BackHandler(enabled = attachmentPickerExpanded) { attachmentPickerExpanded = false }
     // Text is durably queued for a trusted host even while disconnected. Live voice remains online-only.
     val canSend = peerName != null
-    val canStartLive = canSend && !importingAttachments && !importingSharedAttachments && connectionState == "Live" && phoneConversationsSupported
+    val canStartLive = draftsLoaded && canSend && !importingAttachments && !importingSharedAttachments && connectionState == "Live" && phoneConversationsSupported
     val canSendAttachments = attachmentsSupported || connectionState != "Live"
     val visibleTranscript = transcript
     // Latch recovery controls once eligible so a connection phase change cannot resize the composer
@@ -1865,11 +1866,10 @@ internal fun ConversationScreen(
     var dictationPartial by remember { mutableStateOf<com.kompi.app.audio.OfflineTranscript?>(null) }
     var dictationOverflow by remember { mutableStateOf(false) }
     var voiceMessage by remember { mutableStateOf("") }
-    LaunchedEffect(attachmentShareReceipt, pendingAttachmentIds) {
-        attachmentShareReceipt.collect { receipt ->
-            if (receipt == null) return@collect
+    LaunchedEffect(attachmentDraftScope, attachmentShareReceipt, pendingAttachmentIds) {
+        attachmentShareReceipt.collectLatest { receipt ->
             val available = withContext(Dispatchers.IO) {
-                if (attachmentDraftScope != null) {
+                if (receipt != null && attachmentDraftScope != null) {
                     val unscopedIds = receipt.selection?.added.orEmpty().mapTo(hashSetOf()) { it.uploadId }
                     attachmentStore.claimUnscoped(attachmentDraftScope, unscopedIds)
                 }
@@ -1877,6 +1877,8 @@ internal fun ConversationScreen(
             }
             draftAttachments.clear()
             draftAttachments.addAll(available)
+            draftsLoaded = true
+            if (receipt == null) return@collectLatest
             voiceMessage = when {
                 draftAttachments.size > AttachmentDraftStore.MAX_DRAFT_ATTACHMENTS ->
                     "You can attach up to ${AttachmentDraftStore.MAX_DRAFT_ATTACHMENTS} files per message. Remove files to continue."
@@ -2070,7 +2072,7 @@ internal fun ConversationScreen(
         sendScope.launch {
             try {
                 val result = withContext(Dispatchers.IO) { attachmentStore.importSelection(uris, pendingAttachmentIds, attachmentDraftScope) }
-                draftAttachments.addAll(result.added)
+                draftAttachments.addAll(result.added.filterNot { added -> draftAttachments.any { it.uploadId == added.uploadId } })
                 voiceMessage = result.message.orEmpty()
             } finally {
                 importingAttachments = false
@@ -2387,9 +2389,9 @@ internal fun ConversationScreen(
                         }
                     }
                 }
-                val sendEnabled = pendingCapture == null && dictationSendAllowed(dictationPhase, dictationPartial != null, dictationStartFence.hasRequest) && !startingNewChat && !importingAttachments && !importingSharedAttachments && (composerFieldState.text.isNotBlank() || draftAttachments.isNotEmpty()) && canSend &&
+                val sendEnabled = draftsLoaded && pendingCapture == null && dictationSendAllowed(dictationPhase, dictationPartial != null, dictationStartFence.hasRequest) && !startingNewChat && !importingAttachments && !importingSharedAttachments && (composerFieldState.text.isNotBlank() || draftAttachments.isNotEmpty()) && canSend &&
                     (draftAttachments.isEmpty() || canSendAttachments) && draftAttachments.size <= AttachmentDraftStore.MAX_DRAFT_ATTACHMENTS && composer.revision !in submittingRevisions
-                val canAddAttachment = peerName != null && !liveActive && !importingAttachments && !importingSharedAttachments && draftAttachments.size < AttachmentDraftStore.MAX_DRAFT_ATTACHMENTS
+                val canAddAttachment = draftsLoaded && peerName != null && !liveActive && !importingAttachments && !importingSharedAttachments && draftAttachments.size < AttachmentDraftStore.MAX_DRAFT_ATTACHMENTS
                 val sendAction: @Composable () -> Unit = {
                     ChatActionButton(
                         label = "Send message",

@@ -95,7 +95,7 @@ class ChatTransportContinuityTest {
             val pi by network.piSession.view.collectAsState()
             val phase by network.state.collectAsState()
             val echoes = remember { LocalMessageEchoes() }
-            val pending = local.outbox.map { it.requestId to repository.reveal(it.encryptedBody) }
+            val pending = local.outbox.map { it.requestId to it.text }
             val projection = buildTranscriptProjection(pi, echoes.reconcile(pi.conversationId, pending, local.requests), local.requests, emptyList())
             SideEffect {
                 rendered = projection.active

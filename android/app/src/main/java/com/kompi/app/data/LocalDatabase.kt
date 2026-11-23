@@ -13,6 +13,8 @@ import androidx.room.RoomDatabase
 import androidx.room.withTransaction
 import androidx.room.Upsert
 import com.kompi.app.security.SecureStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
@@ -148,7 +150,7 @@ data class StoredPrompt(
 )
 
 data class LocalConversationState(
-    val outbox: List<OutboxRow>,
+    val outbox: List<StoredPrompt>,
     val sessions: List<SessionRow>,
     val activeConversationId: String?,
     val requests: List<RequestStateRow>,
@@ -197,7 +199,7 @@ class LocalRepository(
     }
 
     fun observe(hostId: String): Flow<LocalConversationState> = combine(
-        dao.observeOutbox(hostId), dao.observeSessions(hostId), dao.observeRequests(hostId), dao.observeSettings(hostId),
+        dao.observeOutbox(hostId).map { rows -> rows.map(::storedPrompt) }.flowOn(Dispatchers.IO), dao.observeSessions(hostId), dao.observeRequests(hostId), dao.observeSettings(hostId),
     ) { outbox, sessions, requests, settings ->
         LocalConversationState(outbox, sessions, sessions.lastOrNull { it.state == "active" }?.conversationId, requests, settings)
     }
@@ -221,9 +223,21 @@ class LocalRepository(
         }
     }
 
-    suspend fun pendingPrompts(hostId: String): List<StoredPrompt> = dao.observeOutbox(hostId).first().map { row ->
+    suspend fun pendingPrompts(hostId: String): List<StoredPrompt> = dao.observeOutbox(hostId).first().map(::storedPrompt)
+
+    private fun storedPrompt(row: OutboxRow): StoredPrompt {
         val content = ChatModelStorage.decodePrompt(secureStore.reveal(row.encryptedBody))
-        StoredPrompt(row.hostId, row.requestId, row.compositionOrder, content.text, row.delivery, row.state, org.json.JSONArray(row.attachmentIds).let { ids -> (0 until ids.length()).map(ids::getString) }, row.createdAtEpochMillis, content.configuration, content.targetConversationId, content.createIfMissing)
+        // Modern encrypted intents are authoritative, even if the redundant index is corrupt.
+        // Legacy text-only records lack a model and already require discard/resend. Keep them
+        // visible and discardable even when their old index cannot supply an attachment preview.
+        val attachments = content.attachmentIds ?: try {
+            val ids = org.json.JSONArray(row.attachmentIds)
+            (0 until ids.length()).map { ids.get(it) as? String ?: throw org.json.JSONException("Not a string") }
+        } catch (_: org.json.JSONException) {
+            android.util.Log.w("LocalRepository", "Ignoring corrupt attachment index on legacy prompt")
+            emptyList()
+        }
+        return StoredPrompt(row.hostId, row.requestId, row.compositionOrder, content.text, row.delivery, row.state, attachments, row.createdAtEpochMillis, content.configuration, content.targetConversationId, content.createIfMissing)
     }
 
     suspend fun holdPromptForConversation(hostId: String, requestId: String) = database.withTransaction {
@@ -251,7 +265,11 @@ class LocalRepository(
         when (disposition) {
             RejectionDisposition.Retry -> dao.setRequestState(hostId, requestId, "queued")
             RejectionDisposition.Hold -> dao.setRequestState(hostId, requestId, "waiting-for-conversation")
-            RejectionDisposition.Remove -> dao.removeOutbox(hostId, requestId)
+            RejectionDisposition.Remove -> {
+                val request = checkNotNull(dao.request(hostId, requestId))
+                dao.putRequest(request.copy(outcome = "rejected"))
+                dao.removeOutbox(hostId, requestId)
+            }
         }
         true
     }
@@ -287,8 +305,6 @@ class LocalRepository(
         dao.request(hostId, requestId)?.let { dao.putRequest(it.copy(outcome = "cancelled")) }
         true
     }
-
-    fun reveal(encrypted: String): String = ChatModelStorage.decodePrompt(secureStore.reveal(encrypted)).text
 
     fun observeHostSettings(hostId: String): Flow<HostSettingsRow?> = dao.observeSettings(hostId)
 

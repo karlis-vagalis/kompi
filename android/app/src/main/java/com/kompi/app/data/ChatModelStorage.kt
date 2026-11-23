@@ -10,7 +10,7 @@ import com.kompi.app.protocol.generated.WireMessage
 /** Reuse the generated boundary codec for encrypted local model snapshots. */
 internal object ChatModelStorage {
     private const val PROMPT_PREFIX = "kompi-model-prompt:"
-    data class PendingContent(val text: String, val configuration: ChatModelConfiguration?, val targetConversationId: String? = null, val createIfMissing: Boolean = false)
+    data class PendingContent(val text: String, val configuration: ChatModelConfiguration?, val targetConversationId: String? = null, val createIfMissing: Boolean = false, val attachmentIds: List<String>? = null)
 
     fun encodeConfiguration(configuration: ChatModelConfiguration): ByteArray = WireCodec.encode(
         EnvelopeV3(id = "model-selection", message = WireMessage.ModelsResult(ModelCatalog(configuration, emptyList()))),
@@ -35,8 +35,8 @@ internal object ChatModelStorage {
         // A pre-selection outbox item retains its text, but cannot acquire a guessed model.
         if (!value.startsWith(PROMPT_PREFIX)) return PendingContent(value, null)
         return when (val message = WireCodec.decode(Base64.decode(value.removePrefix(PROMPT_PREFIX), Base64.NO_WRAP)).message) {
-            is WireMessage.Prompt -> PendingContent(message.text, message.configuration)
-            is WireMessage.ConversationPrompt -> PendingContent(message.text, message.configuration, message.conversationId, message.createIfMissing == true)
+            is WireMessage.Prompt -> PendingContent(message.text, message.configuration, attachmentIds = message.attachments.orEmpty())
+            is WireMessage.ConversationPrompt -> PendingContent(message.text, message.configuration, message.conversationId, message.createIfMissing == true, message.attachments.orEmpty())
             else -> error("Stored message is not a prompt")
         }
     }

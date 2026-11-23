@@ -10,10 +10,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
+import com.kompi.app.data.LocalRepository
 
 /** Retains the URI-grant copy job and its receipt across Activity configuration recreation. */
 class AttachmentShareViewModel(application: Application) : AndroidViewModel(application) {
@@ -68,15 +67,7 @@ class AttachmentShareViewModel(application: Application) : AndroidViewModel(appl
     private suspend fun pendingAttachmentIds(): Set<String> {
         val context = getApplication<Application>()
         val trustedHosts = SecureStore(context).trustedMachines().map { it.machineId }
-        val dao = LocalDatabase.open(context).localDao()
-        val rows = trustedHosts.flatMap { hostId -> dao.observeOutbox(hostId).first() }
-        return buildSet {
-            rows.forEach { row ->
-                val attachmentIds = runCatching { JSONArray(row.attachmentIds) }.getOrNull() ?: return@forEach
-                for (index in 0 until attachmentIds.length()) {
-                    runCatching { attachmentIds.getString(index) }.getOrNull()?.let(::add)
-                }
-            }
-        }
+        val repository = LocalRepository(LocalDatabase.open(context), SecureStore(context))
+        return trustedHosts.flatMap { repository.pendingPrompts(it) }.flatMap { it.attachmentIds }.toSet()
     }
 }
