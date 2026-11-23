@@ -1,8 +1,10 @@
 # Kompi
 
-**Your personal Pi assistant on Android. Send a message or talk in Live mode.**
+**A personal assistant on your Android phone, powered by the [Pi](https://pi.dev/) you already use on your computer.**
 
-There are already good ways to run a coding agent from a phone. I built Kompi (*Pi companion*) because I wanted an assistant I could talk to without turning every request into a coding task. Type a quick message, or switch to Live mode for a spoken conversation. Pi runs on your paired computer, so when you *do* want to work on code, you can pick up an existing session with its files and tools.
+I built Kompi (*Pi companion*) because not everything I want from Pi is a coding task. Sometimes I’m in the kitchen with half a lemon and a can of chickpeas, and I’d rather ask what to cook than open a terminal. Other times I *do* want to pick up the coding session I left at my desk. Kompi lets me do both: the conversation is on my phone, but Pi still has the files, tools, and settings on my computer.
+
+[Get Kompi](#first-chat) · [Latest release](https://github.com/karlis-vagalis/kompi/releases/latest)
 
 **Demo gallery.** Android emulator screenshots with a fictional conversation and simulated paired computers.
 
@@ -10,6 +12,13 @@ There are already good ways to run a coding agent from a phone. I built Kompi (*
 | --- | --- |
 | [![Light chat: Pi suggests lemony chickpeas and explains how to pack leftovers.](docs/screenshots/chat-light.png)](docs/screenshots/chat-light.png) | [![Dark chat: the same meal-planning conversation.](docs/screenshots/chat-dark.png)](docs/screenshots/chat-dark.png) |
 | [![Light Computers screen: Desk computer selected, Travel laptop also paired.](docs/screenshots/computers-light.png)](docs/screenshots/computers-light.png) | [![Dark Computers screen showing the same two trusted computers.](docs/screenshots/computers-dark.png)](docs/screenshots/computers-dark.png) |
+
+## What you can do with Kompi
+
+- **Talk while your hands are busy.** Switch to Live mode for a spoken conversation, hear Pi’s reply, and interrupt with a follow-up. If you’d rather review your words first, dictate into the chat box instead. The downloadable Parakeet model transcribes speech on your phone.
+- **Bring something into the conversation.** Share a screenshot from another Android app, add a question, and review the draft before sending it. No need to move the image to your computer first.
+- **Ask for an action on the phone itself.** Ask Pi to set a kitchen timer, open directions, or draft a text in your messaging app. Kompi uses Android’s own apps for these actions; drafting a message isn’t the same as sending it. You can also choose Kompi as Android’s digital assistant.
+- **Pick up where you left off.** Browse Pi sessions on a paired computer and continue an existing conversation instead of explaining the context again. Pair more than one computer and choose which one to talk to. [iroh](https://www.iroh.computer/) encrypts the connection and uses a direct route when possible or a relay when needed.
 
 > **Development status:** Kompi is under very active development. Expect breaking changes between versions. Use it at your own risk.
 
