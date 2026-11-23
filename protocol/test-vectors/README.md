@@ -1,3 +1,10 @@
 # Interoperability fixtures
 
-`v4.json` contains synthetic envelopes, CBOR payloads and length-prefixed frames, plus malformed payloads that readers must reject. Regenerate from `pi-extension/` with `bun test/generate-vectors.ts`. Run `bun run test` there to check framing and decoding. Kotlin vectors can be checked by setting `KOTLIN_VECTORS` to a corpus with the same format.
+From the repository root:
+
+```sh
+cargo run --locked -p kompi-protocol --example export-wire-vectors > protocol/test-vectors/rust-v4.json
+(cd pi-extension && bun install --frozen-lockfile && bun test/generate-vectors.ts)
+```
+
+`rust-v4.json` contains JSON and CBOR serialized by Rust from the same typed envelopes. The TypeScript decoder reads those bytes. The TypeScript generator uses the logical messages (not their Rust hex) to encode `v4.json`, including length-prefixed frames and deliberately malformed inputs. Rust's `typescript_wire` integration test and Android's `WireVectorsTest` consume that output independently. CI also regenerates and compares the artifacts on a fresh checkout.

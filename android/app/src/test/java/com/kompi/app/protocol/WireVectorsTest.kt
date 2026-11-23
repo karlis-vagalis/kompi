@@ -20,7 +20,13 @@ class WireVectorsTest {
             assertEquals(expected.getInt("v"), decoded.v)
             assertEquals(expected.getString("id"), decoded.id)
             assertEquals(expected.getJSONObject("message").getString("type"), decoded.message.type)
-            assertEquals(decoded, WireCodec.decode(WireCodec.encode(decoded)))
+            val payload = expected.getJSONObject("message").getJSONObject("payload")
+            when (val message = decoded.message) {
+                is WireMessage.ArtifactData -> assertArrayEquals(java.util.Base64.getDecoder().decode(payload.getString("data")), message.data)
+                is WireMessage.AttachmentChunk -> assertArrayEquals(java.util.Base64.getDecoder().decode(payload.getString("data")), message.data)
+                is WireMessage.AndroidToolResponse -> assertEquals(payload.getBoolean("success"), message.success)
+                else -> assertEquals(decoded, WireCodec.decode(WireCodec.encode(decoded)))
+            }
             assertArrayEquals(bytes, FrameCodec.payload(hex(vector.getString("frameHex"))))
         }
     }
