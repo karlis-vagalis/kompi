@@ -51,7 +51,7 @@ fn main() {
             "LICENSE".into(),
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../LICENSE"),
         )];
-        for name in ["notices.tar.gz", "worker/package.json", "worker/bun.lock"] {
+        for name in ["notices.tar.gz", "worker/package.json", "worker/bun.lock", "worker/typebox-LICENSE", "worker/zod-LICENSE"] {
             files.push((name.into(), root.join(name)));
         }
         compiled(&root, &root.join("worker/dist-worker"), &mut files);

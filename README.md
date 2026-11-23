@@ -53,7 +53,7 @@ Prefer to build locally? See the [host](daemon/README.md) and [Android](android/
 
 **Access and privacy:** A paired phone can run Pi as your host user. Keep pairing codes private. Pi stores transcripts on the host; the phone caches chat data, and Pi sends requests to your configured model provider. To remove access, find the phone with `kompi devices list` and run `kompi devices revoke <endpoint>`.
 
-**Upgrading:** Check the release notes for breaking changes and update the app and daemon together. Stop the daemon, rerun the installer and repeat the worker setup before restarting.
+**Upgrading:** Check the release notes for breaking changes and update the app and daemon together. Stop the daemon, rerun the installer and restart. For v0.1.0 only, repeat the linked worker setup first.
 
 **Why use Pi directly?** Pi Durable might be a better fit for session management, but I wanted one Pi setup to maintain. Kompi runs the same Pi CLI I use in the terminal, so both use the same settings, credentials, and extensions.
 

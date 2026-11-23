@@ -96,7 +96,7 @@ jobs:
         with:
           name: notices
           path: target/package-inputs
-      - name: Install checksum-pinned cargo-dist and test the resulting archive
+      - name: Build with checksum-pinned cargo-dist; smoke-test clean installer, serve and bundled worker
         shell: bash
         run: |
           tool="cargo-dist-${{ matrix.target }}"

@@ -20,7 +20,7 @@ Kompi distributes its signed Android APK and native x86-64 Linux GNU and Windows
 
 Download all assets into one directory and run `sha256sum -c SHA256SUMS`. Verify the APK with `apksigner verify --verbose --print-certs kompi.apk` and compare its fingerprint with your trusted copy before sideloading. Checksums detect damaged downloads; they are not independent signatures on the daemon.
 
-See the [setup guide](../README.md) for installer commands and the archive fallback. Each installer downloads from its own release tag. `kompi setup-worker` prepares the matching worker and notices beside the installed executable and prints the worker directory. Install its locked dependencies there after each upgrade. Neither installer supplies Bun, Pi or `node_modules`. For redistribution, keep the notices, matching tagged source and `rust-dependency-sources.tar.gz` (including the locked Git dependencies).
+See the [setup guide](../README.md) for installer commands and the archive fallback. Each installer downloads from its own release tag. `kompi serve` extracts the matching bundled worker and notices beside the installed executable. The installer does not supply Bun or Pi. Only v0.1.0 requires a separate worker dependency install. For redistribution, keep the notices, matching tagged source and `rust-dependency-sources.tar.gz` (including the locked Git dependencies).
 
 ## Build without publishing
 

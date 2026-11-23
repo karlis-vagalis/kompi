@@ -3315,7 +3315,6 @@ impl WorkerHost {
             .and_then(serde_json::Value::as_str);
         if worker_script != Some("bun dist-worker/daemon/src/worker.js")
             || !worker_dir.join("dist-worker/daemon/src/worker.js").is_file()
-            || !worker_dir.join("node_modules").is_dir()
         {
             bail!(
                 "Pi SDK worker package must provide its compiled worker entry, dependencies, and matching worker script"
@@ -3336,6 +3335,7 @@ impl WorkerHost {
         }
         let mut child = command
             .env("KOMPI_ANDROID_TOOL_SOCKET", &android_tool_socket)
+            .arg("--no-install")
             .arg("dist-worker/daemon/src/worker.js")
             .current_dir(&worker_dir)
             .stdin(std::process::Stdio::piped())

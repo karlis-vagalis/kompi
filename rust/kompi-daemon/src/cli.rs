@@ -113,7 +113,12 @@ pub async fn run() -> Result<()> {
             println!("{}", crate::package_worker::setup()?.display());
             Ok(())
         }
-        CommandKind::Serve {} => crate::transport::run_daemon(state_dir).await,
+        CommandKind::Serve {} => {
+            if std::env::var_os("KOMPI_SDK_WORKER_DIR").is_none() {
+                crate::package_worker::default_dir()?;
+            }
+            crate::transport::run_daemon(state_dir).await
+        }
         CommandKind::Status { json } => {
             ensure_running(&state_dir).await?;
             let result = control(&state_dir, ControlMessage::Status {}).await?;

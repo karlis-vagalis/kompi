@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 from threading import Thread
+import time
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +40,16 @@ def main():
     worker = INPUT / 'worker'
     if worker.exists():
         shutil.rmtree(worker)
-    shutil.copytree(daemon / 'dist-worker', worker / 'dist-worker')
+    # Pi loads extensions (and its Windows preload) by URL relative to the worker.
+    # Build these as standalone ESM entry points in the same directory.
+    entries = ['worker', *('conversations/' + name for name in (
+        'attachment-order', 'android-tools', 'follow-up-boundary', 'transcript-owner', 'windows-pi-preload'))]
+    dest = worker / 'dist-worker/daemon/src'
+    for entry in entries:
+        run('bun', 'build', '--target=node', '--format=esm', '--outfile', dest / (Path(entry).name + '.js'),
+            f'src/{entry}.ts', cwd=daemon)
+    for package, license in [('zod', 'LICENSE'), ('typebox', 'license')]:
+        shutil.copyfile(daemon / 'node_modules' / package / license, worker / f'{package}-LICENSE')
     for file in ('package.json', 'bun.lock'):
         shutil.copyfile(daemon / file, worker / file)
     run('cargo', 'metadata', '--locked', '--format-version=1', stdout=subprocess.DEVNULL)
@@ -94,7 +104,8 @@ def smoke_installer(fixture, archive, tag):
                 run(*cmd, installer, cwd=fixture, env=env, timeout=120)
                 exe = prefix / ('kompi.exe' if windows else 'kompi')
                 run(exe, '--version', cwd=fixture)
-                worker = Path(run(exe, 'setup-worker', cwd=fixture, stdout=subprocess.PIPE, text=True).stdout.strip())
+                smoke_serve(exe, fixture)
+                worker, = prefix.glob('kompi-runtime-*/worker')
                 if not worker.is_absolute() or not worker.resolve().is_relative_to(prefix.resolve()):
                     raise RuntimeError('setup-worker did not provision the installed runtime')
                 for source, installed in [(ROOT / 'LICENSE', worker.parent / 'LICENSE'), (INPUT / 'notices.tar.gz', worker.parent / 'notices.tar.gz')]:
@@ -106,13 +117,35 @@ def smoke_installer(fixture, archive, tag):
             thread.join()
 
 
+def smoke_serve(exe, fixture):
+    args = [exe, '--state-dir', fixture / 'state']
+    env = {k: v for k, v in os.environ.items() if not k.startswith('KOMPI_')}
+    with subprocess.Popen([*args, 'serve'], cwd=fixture, env=env) as daemon:
+        try:
+            deadline = time.monotonic() + 30
+            while daemon.poll() is None and time.monotonic() < deadline:
+                status = subprocess.run([*args, 'status', '--json'], cwd=fixture, env=env,
+                                        capture_output=True, timeout=10)
+                if status.returncode == 0 and json.loads(status.stdout)['running']:
+                    return
+                time.sleep(0.25)
+            raise RuntimeError('installed daemon did not become ready')
+        finally:
+            daemon.kill()
+
+
 def smoke_worker(worker):
-    run('bun', 'install', '--production', '--frozen-lockfile', cwd=worker)
+    if (worker / 'node_modules').exists():
+        raise RuntimeError('worker smoke requires a clean install')
+    # Verify all Pi-loaded modules resolve without the source checkout or SDK.
+    directory = worker / 'dist-worker/daemon/src'
+    for module in ('attachment-order', 'android-tools', 'follow-up-boundary', 'transcript-owner'):
+        run('node', '--input-type=module', '-e', f"await import('./{module}.js')", cwd=directory)
     # A real round trip without opening a Pi session or using model credentials.
     request_id = '6031d25f-0da2-43dd-9d2c-152d66b4438a'
     conversation = '0bba8946-46a5-48e0-9ba5-28dd3c15620f'
     request = {'v': 4, 'id': request_id, 'message': {'type': 'snapshot', 'payload': {'conversationId': conversation}}}
-    response = run('bun', 'run', 'worker', cwd=worker, text=True,
+    response = run('bun', '--no-install', 'dist-worker/daemon/src/worker.js', cwd=worker, text=True,
                    input=json.dumps(request) + '\n', stdout=subprocess.PIPE, timeout=30)
     reply = json.loads(response.stdout)
     if (reply['id'], reply['message']['type'], reply['message']['payload']['code']) != (request_id, 'error', 'session-not-found'):
