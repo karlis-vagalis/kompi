@@ -48,6 +48,9 @@ jobs:
           (cd rust-dependency-sources/vendor && find . -type f \( -iname 'license*' -o -iname 'licence*' -o -iname 'copying*' -o -iname 'notice*' -o -iname 'copyright*' \) -print0) > notices.list
           mkdir -p kompi-linux-x86_64/notices
           tar -C rust-dependency-sources/vendor --null -T notices.list -cf - | tar -C kompi-linux-x86_64/notices -xf -
+          cp -r third-party rust-dependency-sources/
+          mkdir -p kompi-linux-x86_64/notices/iroh-tickets
+          cp third-party/iroh-tickets/LICENSE-* kompi-linux-x86_64/notices/iroh-tickets/
           tar czf rust-dependency-sources.tar.gz rust-dependency-sources
           cp -r daemon/{package.json,bun.lock,dist-worker} kompi-linux-x86_64/worker/
           test -s kompi-linux-x86_64/worker/dist-worker/daemon/src/worker.js
@@ -84,6 +87,7 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-37.0' 'build-tools;36.0.0' 'ndk;30.0.16248370' 'cmake;4.1.2'
       - working-directory: android
         run: ./gradlew --no-daemon :app:testDebugUnitTest
+      - run: android/app/src/main/cpp/whistle/fetch-native.sh
       - run: just apk-release
       - if: inputs.package || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
