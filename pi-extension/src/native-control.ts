@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { ControlClient } from "./ipc.js";
-import { runJson } from "./native-cli.js";
+import { runStatusJson } from "./native-cli.js";
 
 function stateDirectory(): string {
   const configured = process.env.KOMPI_STATE_DIR;
@@ -14,7 +14,7 @@ export function fallbackControlSocketPath(): string {
 }
 
 async function resolveControlSocketPath(): Promise<string> {
-  const status = await runJson<{ controlSocket?: string }>(["status", "--json"]);
+  const status = await runStatusJson();
   return status.controlSocket || fallbackControlSocketPath();
 }
 

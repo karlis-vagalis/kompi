@@ -1,15 +1,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AgentNotificationSchema, type AgentNotification } from "./protocol/generated.js";
-import { NativeCliError, NotificationNotDispatchedError, runJson, runNotificationJsonOutput, serviceUnavailable } from "./native-cli.js";
-interface Device { endpoint: string; name: string; pairedAt: string; lastSeen?: string | null; }
-interface PairingCliResult {
-  pairing: { qr: string; terminalQr?: string; pngBase64?: string; token?: string; name: string; expiresAt: string };
-}
-interface StatusCliResult {
-  running?: boolean; endpoint?: string | null; controlSocket?: string; pairedDevices?: Device[];
-}
-interface DevicesCliResult { devices: Device[]; }
+import { NativeCliError, NotificationNotDispatchedError, runStatusJson, runPairJson, runDevicesJson, runRevokeJson, runNotificationJsonOutput, serviceUnavailable } from "./native-cli.js";
+type Device = Awaited<ReturnType<typeof runDevicesJson>>["devices"][number];
 const DeviceNotificationResultSchema = z.object({
   endpoint: z.string().regex(/^[a-f0-9]{64}$/),
   status: z.enum(["queued", "push-accepted", "posted", "not-posted", "unknown", "offline", "unavailable"]),
@@ -42,7 +35,7 @@ interface PairingDisplay { terminalQr: string; png: Buffer; name: string; expire
 export class NativeBridge {
 
   async status(): Promise<string> {
-    const status = await this.cliJson<StatusCliResult>(["status", "--json"]);
+    const status = await this.cliJson(runStatusJson());
     return [
       `Native kompi: ${status.running ? "running" : "stopped"}`,
       status.endpoint ? `Endpoint: ${status.endpoint}` : "",
@@ -54,7 +47,7 @@ export class NativeBridge {
     const args = ["pair", "--json"];
     if (tokenRequested) args.push("--token");
     if (name) args.push(name);
-    const result = await this.cliJson<PairingCliResult>(args);
+    const result = await this.cliJson(runPairJson(args));
     const pairing = result.pairing;
     if (!pairing.terminalQr) throw new Error("Native kompi did not include its full terminal QR rendering");
     if (tokenRequested && !pairing.token) throw new Error("Native kompi did not return the requested pairing token");
@@ -70,12 +63,12 @@ export class NativeBridge {
   }
 
   async listDevices(): Promise<readonly Device[]> {
-    const result = await this.cliJson<DevicesCliResult>(["devices", "list", "--json"]);
+    const result = await this.cliJson(runDevicesJson());
     return result.devices;
   }
 
   async revokeDevice(endpoint: string): Promise<void> {
-    await this.cliJson<Record<string, never>>(["devices", "revoke", endpoint, "--json"]);
+    await this.cliJson(runRevokeJson(endpoint));
   }
 
   async sendNotification(endpoint: string, title: string, body: string, requestId: string, signal?: AbortSignal): Promise<DeviceNotificationResult> {
@@ -118,8 +111,8 @@ export class NativeBridge {
     return parsed;
   }
 
-  private async cliJson<T extends object>(args: readonly string[], options: { operationLabel?: string; redactInput?: boolean } = {}): Promise<{ ok: true } & T> {
-    try { return await runJson<T>(args, options); }
+  private async cliJson<T>(operation: Promise<T>): Promise<T> {
+    try { return await operation; }
     catch (error) { throw serviceUnavailable(error); }
   }
 
