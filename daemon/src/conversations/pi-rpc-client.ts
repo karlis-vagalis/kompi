@@ -1,3 +1,4 @@
+import { windowsPi } from "./windows-pi.ts";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -52,7 +53,7 @@ export class PiRpcCommandError extends Error {}
 
 /** Small bounded JSONL transport. Pi, not this adapter, owns configuration and runtime setup. */
 export class PiTranscriptOwnedError extends Error {}
-export interface TranscriptLaunch { readonly path: string; readonly fd: number; readonly lockFd: number }
+export type TranscriptLaunch = { readonly path:string; readonly fd:number; readonly lockFd:number } | { readonly path:string; readonly expectedSessionId?:string };
 
 function hasRpcPipes(child: ChildProcess): child is ChildProcessWithoutNullStreams {
   return child.stdin !== null && child.stdout !== null && child.stderr !== null;
@@ -89,7 +90,11 @@ export class PiRpcClient {
     // Lock the sidecar before the verified, already-open inode. Never use
     // flock's filename form: it can create a new file after concurrent delete.
     // Both descriptors survive exec and follow Pi until it actually exits.
-    const child = transcript
+    const windows = process.platform === "win32" ? windowsPi() : undefined;
+    const preload = new URL(`./windows-pi-preload${sourceSuffix}`, import.meta.url).href;
+    const child = windows
+      ? spawn(windows.node, [...(transcript ? ["--import", preload] : []), windows.cli, ...piArgs], { ...options, windowsHide:true, env:{ ...options.env, KOMPI_PI_RESUME_FILE:transcript?.path, KOMPI_PI_RESUME_ID:transcript && "expectedSessionId" in transcript ? transcript.expectedSessionId : undefined }, stdio:["pipe","pipe","pipe"] })
+      : transcript && "fd" in transcript
       ? spawn("/bin/sh", ["-c", `flock -x -n -E ${TRANSCRIPT_LOCK_CONFLICT} 4 || exit $?; flock -x -n -E ${TRANSCRIPT_LOCK_CONFLICT} 3 || exit $?; [ "$1" -ef /proc/self/fd/3 ] && [ "$1.kompi-lock" -ef /proc/self/fd/4 ] || exit ${TRANSCRIPT_LOCK_CONFLICT}; shift; exec "$@"`, "kompi-lock", transcript.path, pi, ...piArgs],
         { ...options, stdio: ["pipe", "pipe", "pipe", transcript.fd, transcript.lockFd] })
       : spawn(pi, piArgs, { ...options, stdio: ["pipe", "pipe", "pipe"] });

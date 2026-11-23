@@ -2,7 +2,9 @@
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use serde_json::value::RawValue;
-use std::{fs::OpenOptions, io::Read, os::unix::fs::OpenOptionsExt, path::Path};
+#[cfg(unix)]
+use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt};
+use std::{io::Read, path::Path};
 
 const MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -29,6 +31,9 @@ pub(crate) fn snapshot(path: &Path, session_id: &str) -> Result<String> {
         path.is_absolute() && path.extension().is_some_and(|ext| ext == "jsonl"),
         "invalid transcript path"
     );
+    #[cfg(windows)]
+    let file = crate::pi_history::windows::read_file(path)?;
+    #[cfg(unix)]
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)

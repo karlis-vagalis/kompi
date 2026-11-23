@@ -1,3 +1,4 @@
+import { acquireWindowsLease } from "./windows-pi.ts";
 import { spawnSync } from "node:child_process";
 import { constants, fstatSync, openSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -14,6 +15,7 @@ export default function installTranscriptOwner(pi: ExtensionAPI): void {
     const path = ctx.sessionManager.getSessionFile();
     if (!path) return; // transcript-free model catalog worker
     try {
+      if (process.platform === "win32") { acquireWindowsLease(path,"fresh"); return; }
       const fd = openSync(transcriptLockPath(path), constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
       const stat = fstatSync(fd);
       if (!stat.isFile() || stat.nlink !== 1) process.exit(TRANSCRIPT_LOCK_CONFLICT);

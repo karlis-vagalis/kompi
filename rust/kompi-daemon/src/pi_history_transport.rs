@@ -271,7 +271,8 @@ impl Daemon {
         };
         let authorized = || async {
             Ok::<bool, anyhow::Error>(
-                self.is_current_connection(peer, generation) && self.sqlite.device(peer).await?.is_some(),
+                self.is_current_connection(peer, generation)
+                    && self.sqlite.device(peer).await?.is_some(),
             )
         };
         ensure!(authorized().await?, "stale connection");
@@ -337,7 +338,10 @@ impl Daemon {
             Err(LockError::Missing(parent)) if intent.is_some() => {
                 // Interrupted after unlink. Make that absence durable before
                 // recording success; no replacement has been opened or removed.
+                #[cfg(unix)]
                 tokio::task::spawn_blocking(move || parent.sync_all()).await??;
+                #[cfg(windows)]
+                drop(parent); // Windows completes disposition on handle close.
             }
             Err(LockError::InUse) => {
                 return Ok(activation_error(

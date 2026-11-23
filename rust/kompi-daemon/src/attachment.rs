@@ -5,7 +5,6 @@ use kompi_protocol::{ATTACHMENT_CHUNK_MAX_BYTES, ATTACHMENT_MAX_FILE_BYTES, ATTA
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -231,7 +230,7 @@ impl AttachmentStore {
         let offer = read_offer(&dir.join("offer.json"))?;
         let path = dir.join("payload.part");
         ensure_regular_file(&path)?;
-        let mut file = tokio::fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(&path).await?;
+        let mut file = tokio::fs::File::from_std(crate::private_fs::open_file(&path, OpenOptions::new().read(true).write(true))?);
         let actual = file.metadata().await?.len();
         if actual != offset { bail!("attachment chunk offset is not contiguous"); }
         let end = offset.checked_add(data.len() as u64).context("attachment offset overflow")?;
@@ -266,7 +265,7 @@ impl AttachmentStore {
         }
         let part = dir.join("payload.part");
         ensure_regular_file(&part)?;
-        let mut file = tokio::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&part).await?;
+        let mut file = tokio::fs::File::from_std(crate::private_fs::open_file(&part, OpenOptions::new().read(true))?);
         let actual_len = file.metadata().await?.len();
         if actual_len != offer.length { bail!("attachment byte count does not match offer"); }
         let mut hasher = Sha256Hasher::new();
@@ -279,13 +278,13 @@ impl AttachmentStore {
         let digest: [u8; 32] = hasher.finalize().into();
         if digest != offer.sha256.0 { bail!("attachment sha256 does not match offer"); }
         let blob = dir.join("payload.blob");
-        // hard_link is an atomic no-clobber publish on the same filesystem.
+        // Publish only after the digest and length are verified.
         let completed_at_ms = jiff::Timestamp::now().as_millisecond();
         let expires_at_ms = self.sqlite.upload_expiry(peer, completed_at_ms).await?;
         let intent = dir.join("completion.intent.json");
         write_completion(&intent, &offer, expires_at_ms)?;
-        fs::hard_link(&part, &blob).context("publish verified attachment without overwrite")?;
-        fs::remove_file(&part)?;
+        drop(file);
+        publish_new(&part, &blob).context("publish verified attachment without overwrite")?;
         write_completion(&dir.join("complete.json"), &offer, expires_at_ms)?;
         fs::remove_file(&intent)?;
         sync_directory(&dir)?;
@@ -432,10 +431,18 @@ fn ensure_peer_quota(peer_dir: &Path, requested: u64, exclude: Option<&Path>) ->
     Ok(())
 }
 
-fn read_offer(path: &Path) -> Result<Offer> {
+fn read_metadata(path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read;
     ensure_regular_file(path)?;
-    let bytes = fs::read(path)?;
+    let file = crate::private_fs::open_file(path, OpenOptions::new().read(true))?;
+    let mut bytes = Vec::new();
+    file.take(2049).read_to_end(&mut bytes)?;
     if bytes.len() > 2048 { bail!("invalid attachment metadata size"); }
+    Ok(bytes)
+}
+
+fn read_offer(path: &Path) -> Result<Offer> {
+    let bytes = read_metadata(path)?;
     let disk = serde_json::from_slice::<DiskOffer>(&bytes)?;
     let offer = Offer::new(disk.offer.upload_id, disk.offer.file_name.0, disk.offer.media_type.0,
         disk.offer.length, &disk.offer.sha256.as_hex())?;
@@ -450,7 +457,7 @@ fn read_offer(path: &Path) -> Result<Offer> {
 
 fn verify_blob(path: &Path, offer: &Offer) -> Result<()> {
     ensure_regular_file(path)?;
-    let mut file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    let mut file = crate::private_fs::open_file(path, OpenOptions::new().read(true))?;
     if file.metadata()?.len() != offer.length { bail!("published attachment length does not match offer"); }
     let mut hasher = Sha256Hasher::new();
     let mut buf = vec![0u8; HASH_CHUNK_SIZE];
@@ -466,9 +473,7 @@ fn verify_blob(path: &Path, offer: &Offer) -> Result<()> {
 }
 
 fn read_completion(path: &Path) -> Result<DiskCompletion> {
-    ensure_regular_file(path)?;
-    let bytes = fs::read(path)?;
-    if bytes.len() > 2048 { bail!("invalid attachment metadata size"); }
+    let bytes = read_metadata(path)?;
     let completion = serde_json::from_slice::<DiskCompletion>(&bytes)
         .context("completed attachment metadata must include its fixed expiry")?;
     let parsed = Offer::new(completion.offer.upload_id, completion.offer.file_name.0.clone(),
@@ -489,8 +494,8 @@ fn write_completion(path: &Path, offer: &Offer, expires_at_ms: i64) -> Result<()
     let mut file = create_private_file(&tmp)?;
     serde_json::to_writer(&mut file, &DiskCompletion { offer: offer.clone(), expires_at_ms })?;
     file.sync_all()?;
-    fs::hard_link(&tmp, path).context("publish attachment completion without overwrite")?;
-    fs::remove_file(tmp)?;
+    drop(file);
+    publish_new(&tmp, path).context("publish attachment completion without overwrite")?;
     sync_directory(parent)?;
     Ok(())
 }
@@ -502,23 +507,61 @@ fn write_offer(path: &Path, offer: &Offer) -> Result<()> {
     serde_json::to_writer(&mut file, &DiskOffer { offer: offer.clone() })?;
     file.sync_all()?;
     // Never replace an unexpected file (or symlink) at the destination.
-    fs::hard_link(&tmp, path).context("publish attachment metadata without overwrite")?;
-    fs::remove_file(tmp)?;
+    drop(file);
+    publish_new(&tmp, path).context("publish attachment metadata without overwrite")?;
     sync_directory(parent)?;
     Ok(())
 }
 
+#[cfg(test)]
+mod publish_tests {
+    use super::*;
+
+    #[test]
+    fn publishing_never_replaces_an_existing_blob() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir(&dir).unwrap();
+        let part = dir.join("payload.part");
+        let blob = dir.join("payload.blob");
+        fs::write(&part, b"original").unwrap();
+        publish_new(&part, &blob).unwrap();
+        assert!(!part.exists());
+        fs::write(&part, b"retry").unwrap();
+        assert!(publish_new(&part, &blob).is_err());
+        assert_eq!(fs::read(&blob).unwrap(), b"original");
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(unix)]
+fn publish_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::hard_link(from, to)?;
+    fs::remove_file(from)
+}
+
+#[cfg(windows)]
+fn publish_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+    // Both names are generated inside the same private upload directory; omitting
+    // REPLACE_EXISTING and COPY_ALLOWED requires a same-volume no-clobber rename.
+    let wide = |p: &Path| p.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    if unsafe { MoveFileExW(wide(from).as_ptr(), wide(to).as_ptr(), MOVEFILE_WRITE_THROUGH) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn create_private_file(path: &Path) -> Result<fs::File> {
-    Ok(OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?)
+    Ok(crate::private_fs::open_file(path, OpenOptions::new().write(true).create_new(true))?)
 }
 
 fn ensure_private_dir(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_dir() => { fs::set_permissions(path, fs::Permissions::from_mode(0o700))?; Ok(()) }
+        Ok(meta) if meta.file_type().is_dir() => { crate::private_fs::private_dir(path)?; Ok(()) }
         Ok(_) => bail!("attachment storage path is not a real directory"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(path)?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+            crate::private_fs::private_dir(path)?;
             Ok(())
         }
         Err(e) => Err(e.into()),
@@ -527,10 +570,12 @@ fn ensure_private_dir(path: &Path) -> Result<()> {
 
 fn ensure_existing_private_dir(path: &Path) -> Result<()> {
     ensure_real_dir(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    crate::private_fs::private_dir(path)?;
     Ok(())
 }
 fn ensure_real_dir(path: &Path) -> Result<()> {
+    #[cfg(windows)]
+    let _pinned = crate::pi_history::windows::pin_directory(&std::path::absolute(path)?)?;
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_dir() { bail!("attachment path is not a real directory"); }
     Ok(())
@@ -538,7 +583,7 @@ fn ensure_real_dir(path: &Path) -> Result<()> {
 fn ensure_regular_file(path: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() { bail!("attachment path is not a regular file"); }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    crate::private_fs::private_file(path)?;
     Ok(())
 }
 fn path_exists(path: &Path) -> Result<bool> {
@@ -548,4 +593,8 @@ fn path_exists(path: &Path) -> Result<bool> {
         Err(e) => Err(e.into()),
     }
 }
+// Windows exposes no unprivileged directory fsync; payload and metadata files are flushed before publication.
+#[cfg(windows)]
+fn sync_directory(_: &Path) -> Result<()> { Ok(()) }
+#[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<()> { fs::File::open(path)?.sync_all()?; Ok(()) }

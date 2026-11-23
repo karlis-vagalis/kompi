@@ -15,6 +15,8 @@ use crate::{
     session_actor::{PhoneSessionOwner, RuntimeGeneration},
     wire::{read_frame, write_frame},
 };
+#[cfg(unix)]
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
@@ -34,7 +36,6 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
-    os::unix::fs::{FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -44,7 +45,6 @@ use std::{
 };
 use tokio::{
     io::AsyncWriteExt,
-    net::{UnixListener, UnixStream},
     sync::{mpsc, oneshot, watch},
     time::timeout,
 };
@@ -371,36 +371,43 @@ impl Daemon {
         }
         self.worker.shutdown().await;
         self.endpoint.close().await;
+        #[cfg(unix)]
         let _ = fs::remove_file(&self.control_path);
         Ok(())
     }
 
     async fn bind_control(&self) -> Result<()> {
-        if let Some(parent) = self.control_path.parent() {
-            fs::create_dir_all(parent)?;
-            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-        }
-        match fs::symlink_metadata(&self.control_path) {
-            Ok(metadata) => {
-                if !metadata.file_type().is_socket() {
-                    bail!(
-                        "refusing to replace non-socket control path {}",
-                        self.control_path.display()
-                    );
-                }
-                match UnixStream::connect(&self.control_path).await {
-                    Ok(_) => bail!(
-                        "another daemon already listens at {}",
-                        self.control_path.display()
-                    ),
-                    Err(_) => fs::remove_file(&self.control_path)?,
-                }
+        #[cfg(unix)]
+        let listener = {
+            if let Some(parent) = self.control_path.parent() {
+                fs::create_dir_all(parent)?;
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        let listener = UnixListener::bind(&self.control_path)?;
-        fs::set_permissions(&self.control_path, fs::Permissions::from_mode(0o600))?;
+            match fs::symlink_metadata(&self.control_path) {
+                Ok(metadata) => {
+                    if !metadata.file_type().is_socket() {
+                        bail!(
+                            "refusing to replace non-socket control path {}",
+                            self.control_path.display()
+                        );
+                    }
+                    match crate::local_ipc::connect(&self.control_path).await {
+                        Ok(_) => bail!(
+                            "another daemon already listens at {}",
+                            self.control_path.display()
+                        ),
+                        Err(_) => fs::remove_file(&self.control_path)?,
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            let listener = crate::local_ipc::Listener::bind(&self.control_path)?;
+            fs::set_permissions(&self.control_path, fs::Permissions::from_mode(0o600))?;
+            listener
+        };
+        #[cfg(windows)]
+        let mut listener = crate::local_ipc::Listener::bind(&self.control_path)?;
         let daemon = self.clone();
         let control_permits = self.control_permits.clone();
         tokio::spawn(async move {
@@ -428,7 +435,7 @@ impl Daemon {
         Ok(())
     }
 
-    async fn serve_control(&self, mut stream: UnixStream) -> Result<()> {
+    async fn serve_control(&self, mut stream: crate::local_ipc::ServerStream) -> Result<()> {
         loop {
             let Some(payload) = read_frame(&mut stream).await? else {
                 return Ok(());
@@ -3055,13 +3062,19 @@ async fn shutdown_signal() {
                 .expect("install SIGTERM handler");
         tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_shutdown};
+        let mut interrupt = ctrl_break().expect("install Ctrl-Break handler");
+        let mut close = ctrl_close().expect("install console close handler");
+        let mut shutdown = ctrl_shutdown().expect("install system shutdown handler");
+        tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = interrupt.recv() => {}, _ = close.recv() => {}, _ = shutdown.recv() => {} }
     }
 }
 
 pub async fn run_daemon(state_directory: PathBuf) -> Result<()> {
+    #[cfg(windows)]
+    crate::local_ipc::contain_daemon_tree().context("contain daemon worker processes")?;
     let (store, _instance_lock) = HostIdentity::open(&state_directory)?;
     let sqlite = SqliteStore::open(&state_directory).await?;
     sqlite.recover_interrupted_requests(now_ms()).await?;
@@ -3236,6 +3249,10 @@ struct WorkerSession {
     session_file: String,
     session_name: String,
 }
+fn executable(path: &Path, metadata: &fs::Metadata) -> bool {
+    #[cfg(unix)] { let _ = path; metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 }
+    #[cfg(windows)] { metadata.is_file() && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe")) }
+}
 fn resolve_sdk_runtime() -> Result<PathBuf> {
     let configured = std::env::var_os("KOMPI_SDK_RUNTIME").or_else(|| std::env::var_os("BUN_BIN"));
     if let Some(raw) = configured {
@@ -3249,7 +3266,7 @@ fn resolve_sdk_runtime() -> Result<PathBuf> {
                 path.display()
             )
         })?;
-        if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        if !executable(&path, &metadata) {
             bail!("SDK runtime {} is not an executable file", path.display());
         }
         return fs::canonicalize(&path)
@@ -3257,9 +3274,10 @@ fn resolve_sdk_runtime() -> Result<PathBuf> {
     }
     if let Some(path_var) = std::env::var_os("PATH") {
         for directory in std::env::split_paths(&path_var) {
-            let candidate = directory.join("bun");
+            if !directory.is_absolute() { continue; }
+            let candidate = directory.join(format!("bun{}", std::env::consts::EXE_SUFFIX));
             if let Ok(metadata) = fs::metadata(&candidate) {
-                if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
+                if executable(&candidate, &metadata) {
                     return fs::canonicalize(&candidate)
                         .with_context(|| format!("resolve Bun runtime {}", candidate.display()));
                 }
@@ -3307,6 +3325,7 @@ impl WorkerHost {
         let android_tool_socket = std::env::temp_dir().join(format!("kompi-android-{}.sock", uuid::Uuid::new_v4()));
         let mut command = Command::new(&runtime);
         command.kill_on_drop(true);
+        command.env("KOMPI_NATIVE_BINARY", std::env::current_exe()?);
         command.env_remove("KOMPI_NOTIFICATION_DEVICE_ENDPOINT").env_remove("KOMPI_NOTIFICATION_CONVERSATION_ID").env_remove("KOMPI_NATIVE_CLI");
         if let Some(endpoint) = notification_endpoint {
             anyhow::ensure!(!endpoint.is_empty() && endpoint.len() <= kompi_protocol::PUSH_ENDPOINT_MAX_BYTES, "invalid paired notification endpoint");
@@ -3511,11 +3530,10 @@ impl WorkerHost {
         let failure_wait = failure_tx.clone();
         let pending_wait = pending.clone();
         tokio::spawn(async move {
-            use std::os::unix::process::ExitStatusExt;
             match child.wait().await {
                 Ok(status) => {
                     let phase = WorkerPhase::from_atomic(phase_wait.load(Ordering::Acquire));
-                    eprintln!("Kompi SDK worker process exited phase={} code={:?} signal={:?}", phase.as_str(), status.code(), status.signal());
+                    eprintln!("Kompi SDK worker process exited phase={} status={}", phase.as_str(), status);
                     mark_worker_failed(
                         &healthy_wait,
                         &phase_wait,
@@ -4274,6 +4292,16 @@ fn public_prompt_failure(code: &str) -> &'static str {
     }
 }
 
+#[cfg(windows)]
+fn machine_hostname() -> Result<String> {
+    use windows_sys::Win32::System::SystemInformation::{ComputerNameDnsHostname, GetComputerNameExW};
+    let mut buffer = [0u16; 256]; let mut len = buffer.len() as u32;
+    if unsafe { GetComputerNameExW(ComputerNameDnsHostname, buffer.as_mut_ptr(), &mut len) } == 0 { return Err(std::io::Error::last_os_error().into()); }
+    let name = String::from_utf16(&buffer[..len as usize])?;
+    anyhow::ensure!(!name.trim().is_empty(), "machine hostname is empty");
+    Ok(name)
+}
+#[cfg(unix)]
 fn machine_hostname() -> Result<String> {
     let mut buffer = [0u8; 256];
     // SAFETY: buffer is writable for the full length passed to gethostname.

@@ -11,7 +11,6 @@ use std::{
     collections::HashMap,
     fs::OpenOptions,
     io::{ErrorKind, Read},
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{
         Arc, LazyLock, Mutex,
@@ -286,12 +285,31 @@ pub(super) async fn reply_to_worker(
     }
 }
 
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    #[test]
+    fn reads_only_regular_files() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir(&dir).unwrap();
+        let file = dir.join("example.txt");
+        std::fs::write(&file, b"snapshot").unwrap();
+        assert_eq!(snapshot(&file).unwrap(), b"snapshot");
+        assert!(snapshot(&dir).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
 fn snapshot(path: &Path) -> Result<Vec<u8>> {
     // Refuse a final symlink, and do not block in open() on a FIFO.
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)] {
+        // Keep the snapshot stable even if another writer attempts an in-place edit.
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
+    }
+    let mut file = crate::private_fs::open_file(path, &mut options)
         .context("Could not open the file. Choose a readable regular file, not a symbolic link.")?;
     let before = file
         .metadata()
@@ -317,7 +335,11 @@ fn snapshot(path: &Path) -> Result<Vec<u8>> {
     let after = file
         .metadata()
         .context("Could not read file information.")?;
+    #[cfg(windows)]
+    ensure!(before.len() == after.len() && before.modified()? == after.modified()?, "The file changed while being read.");
+    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
+    #[cfg(unix)]
     ensure!(
         (
             before.len(),

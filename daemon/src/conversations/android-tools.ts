@@ -1,8 +1,9 @@
+import { seal, open } from "./tool-frame.js";
 import { randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
 import { Type } from "typebox";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ANDROID_TOOL_ACTION_MAX_BYTES, ANDROID_TOOL_RESULT_MAX_BYTES, AgentNotificationJsonSchema, parseMessage, type AgentNotification } from "../../../pi-extension/src/protocol/generated.ts";
+import { ANDROID_TOOL_ACTION_MAX_BYTES, ANDROID_TOOL_RESULT_MAX_BYTES, ANDROID_TOOL_TIMEOUT_MS, AgentNotificationJsonSchema, parseMessage, type AgentNotification } from "../../../pi-extension/src/protocol/generated.ts";
 import { AndroidPhoneActionSchema } from "./android-phone-action-schema.js";
 import { notificationToolResult, phoneNotificationRequestId, sendNativeNotification } from "./native-notification.js";
 
@@ -19,7 +20,13 @@ async function invoke(tool: ToolName, actionJson: string | null, signal?: AbortS
   if (signal?.aborted) throw new Error("Android tool request was cancelled before dispatch; no phone request was sent.");
 
   return await new Promise<ToolResponse>((resolve, reject) => {
-    const socket = createConnection(socketPath);
+    const windows = process.platform === "win32";
+    const port = Number(process.env.KOMPI_TOOL_BRIDGE_PORT);
+    const rawKey = process.env.KOMPI_TOOL_BRIDGE_KEY ?? "";
+    if (windows && (!Number.isInteger(port) || port < 1 || port > 65535 || !/^[0-9a-f]{64}$/.test(rawKey))) throw new Error("Invalid Windows tool bridge");
+    const key = windows ? Buffer.from(rawKey, "hex") : undefined;
+    let challenge = "";
+    const socket = windows ? createConnection(port, "127.0.0.1") : createConnection(socketPath);
     const requestId = randomUUID();
     let buffer = Buffer.alloc(0);
     let settled = false;
@@ -28,6 +35,7 @@ async function invoke(tool: ToolName, actionJson: string | null, signal?: AbortS
       if (settled) return;
       settled = true;
       signal?.removeEventListener("abort", onAbort);
+      clearTimeout(bridgeDeadline);
       socket.destroy();
       if (error) reject(tool === "offer_artifact"
         ? new Error("The file offer did not return a receipt. No file was sent to the phone.") : error);
@@ -37,19 +45,28 @@ async function invoke(tool: ToolName, actionJson: string | null, signal?: AbortS
       ? "The phone response was cancelled after dispatch. It may already have acted; do not retry automatically."
       : "Android tool request was cancelled before dispatch; no phone request was sent."));
     signal?.addEventListener("abort", onAbort, { once: true });
-    socket.once("connect", () => {
+    const dispatch = () => {
       const frame = `${JSON.stringify({ requestId, tool, actionJson })}\n`;
       if (Buffer.byteLength(frame, "utf8") > MAX_REQUEST_BYTES + 1024) return finish(new Error("Android tool request exceeds its size limit"));
       dispatched = true;
-      socket.write(frame);
-    });
+      socket.write(key ? seal(key, "request:" + challenge, frame) + "\n" : frame);
+    };
+    if (!windows) socket.once("connect", dispatch);
+    const bridgeDeadline = windows ? setTimeout(() => finish(new Error(dispatched
+      ? "Tool bridge timed out after dispatch. The phone may have acted; do not retry automatically."
+      : "Tool bridge handshake timed out before dispatch.")), ANDROID_TOOL_TIMEOUT_MS + 5000) : undefined;
     socket.on("data", (chunk) => {
       buffer = Buffer.concat([buffer, typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk)]);
-      if (buffer.length > MAX_RESULT_BYTES + 1024) return finish(new Error("Android tool response exceeded its size limit after dispatch. The phone may have acted; do not retry automatically."));
+      if (buffer.length > (key ? (MAX_RESULT_BYTES + 1024) * 2 : MAX_RESULT_BYTES + 1024)) return finish(new Error("Android tool response exceeded its size limit after dispatch. The phone may have acted; do not retry automatically."));
       const newline = buffer.indexOf(0x0a);
       if (newline < 0) return;
       try {
-        const value = JSON.parse(buffer.subarray(0, newline).toString("utf8")) as { requestId?: unknown; response?: unknown };
+        const line = buffer.subarray(0, newline).toString("utf8");
+        if (key && !dispatched) {
+          if (!/^[0-9a-f]{64}$/.test(line) || newline !== buffer.length - 1) throw new Error("Invalid tool challenge");
+          challenge = line; buffer = Buffer.alloc(0); dispatch(); return;
+        }
+        const value = JSON.parse(key ? open(key, "reply:" + challenge, line) : line) as { requestId?: unknown; response?: unknown };
         if (value.requestId !== requestId) throw new Error("Android tool response identity mismatch");
         const response = value.response as ToolResponse;
         if (typeof response !== "object" || response === null || typeof response.success !== "boolean") throw new Error("Invalid Android tool response");

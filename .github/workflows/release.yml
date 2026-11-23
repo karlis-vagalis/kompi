@@ -71,12 +71,20 @@ jobs:
           name: signed-apk
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: daemon
+          pattern: daemon-*
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: dependency-sources
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          assets=(kompi.apk kompi-linux-x86_64.tar.gz rust-dependency-sources.tar.gz)
+          hosts=(kompi-daemon-x86_64-unknown-linux-gnu.tar.gz kompi-daemon-x86_64-pc-windows-msvc.zip)
+          for host in "${hosts[@]}"; do
+            [[ "$(sha256sum "$host" | cut -d' ' -f1)" == "$(awk 'NR==1 {print $1}' "$host.sha256")" ]]
+          done
+          assets=(kompi.apk "${hosts[@]}" rust-dependency-sources.tar.gz)
           sha256sum "${assets[@]}" > SHA256SUMS
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes "${assets[@]}" SHA256SUMS
           gh release edit "$GITHUB_REF_NAME" --draft=false

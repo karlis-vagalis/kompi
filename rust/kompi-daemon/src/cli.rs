@@ -5,7 +5,6 @@ use kompi_protocol::{Envelope, RequestId, control::ControlMessage};
 use std::{path::PathBuf, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
     time::timeout,
 };
 
@@ -110,12 +109,12 @@ pub async fn run() -> Result<()> {
     match args.command {
         CommandKind::Serve {} => crate::transport::run_daemon(state_dir).await,
         CommandKind::Status { json } => {
-            ensure_running(&state_dir)?;
+            ensure_running(&state_dir).await?;
             let result = control(&state_dir, ControlMessage::Status {}).await?;
             print_control(result, json)
         }
         CommandKind::Pair { token, json, name } => {
-            ensure_running(&state_dir)?;
+            ensure_running(&state_dir).await?;
             let result = control(&state_dir, ControlMessage::PairingCreate { name }).await?;
             let pairing = match result {
                 ControlMessage::PairingResult {
@@ -165,28 +164,28 @@ pub async fn run() -> Result<()> {
             Ok(())
         }
         CommandKind::Push { command: PushCommand::AllowOrigin { origin, json } } => {
-            ensure_running(&state_dir)?;
+            ensure_running(&state_dir).await?;
             print_control(control(&state_dir, ControlMessage::PushAllowOrigin { origin }).await?, json)
         }
         CommandKind::Push { command: PushCommand::ListOrigins { json } } => {
-            ensure_running(&state_dir)?;
+            ensure_running(&state_dir).await?;
             print_control(control(&state_dir, ControlMessage::PushAllowedOriginsList {}).await?, json)
         }
         CommandKind::Push { command: PushCommand::RevokeOrigin { origin, json } } => {
-            ensure_running(&state_dir)?;
+            ensure_running(&state_dir).await?;
             print_control(control(&state_dir, ControlMessage::PushAllowedOriginRevoke { origin }).await?, json)
         }
         CommandKind::Devices {
             command: DeviceCommand::List { json },
         } => {
-            ensure_running(&state_dir)?;
+            ensure_running(&state_dir).await?;
             let result = control(&state_dir, ControlMessage::DevicesList {}).await?;
             print_control(result, json)
         }
         CommandKind::Devices {
             command: DeviceCommand::Revoke { endpoint, json },
         } => {
-            ensure_running(&state_dir)?;
+            ensure_running(&state_dir).await?;
             let result = control(&state_dir, ControlMessage::DeviceRevoke { endpoint }).await?;
             print_control(result, json)
         }
@@ -203,7 +202,7 @@ pub async fn run() -> Result<()> {
             }
             let payload=read_notification_payload().await?;
             let notification=payload;
-            if ensure_running(&state_dir).is_err() {
+            if ensure_running(&state_dir).await.is_err() {
                 return print_control(ControlMessage::DeviceNotificationResult {
                     endpoint,
                     status: kompi_protocol::DeviceNotificationStatus::NotPosted,
@@ -239,8 +238,8 @@ fn valid_endpoint(endpoint: &str) -> bool {
         && endpoint.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-fn ensure_running(state_dir: &PathBuf) -> Result<()> {
-    if control_available(state_dir) {
+async fn ensure_running(state_dir: &PathBuf) -> Result<()> {
+    if matches!(timeout(Duration::from_secs(3), crate::local_ipc::connect(&crate::store::control_socket_path(state_dir))).await, Ok(Ok(_))) {
         return Ok(());
     }
     bail!(
@@ -249,9 +248,6 @@ fn ensure_running(state_dir: &PathBuf) -> Result<()> {
         state_dir.display()
     )
 }
-fn control_available(state_dir: &PathBuf) -> bool {
-    std::os::unix::net::UnixStream::connect(crate::store::control_socket_path(state_dir)).is_ok()
-}
 
 async fn control(state_dir: &PathBuf, message: ControlMessage) -> Result<ControlMessage> {
     control_with_timeout(state_dir, message, Duration::from_secs(10)).await
@@ -259,7 +255,7 @@ async fn control(state_dir: &PathBuf, message: ControlMessage) -> Result<Control
 
 async fn control_with_timeout(state_dir: &PathBuf, message: ControlMessage, response_timeout: Duration) -> Result<ControlMessage> {
     let path = crate::store::control_socket_path(state_dir);
-    let mut stream = timeout(Duration::from_secs(3), UnixStream::connect(path)).await??;
+    let mut stream = timeout(Duration::from_secs(3), crate::local_ipc::connect(&path)).await??;
     let id = RequestId::parse(format!("cli-{}", uuid::Uuid::new_v4()))?;
     let request = Envelope::new(id.clone(), message);
     let bytes = kompi_protocol::encode_cbor(&request)?;

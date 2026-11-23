@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, writeFile, chmod, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, chmod, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,7 +13,14 @@ const owned: Array<{ directory: string; child: ChildProcessWithoutNullStreams }>
 // An isolated CLI protocol peer, never the installed Pi or its settings/credentials.
 const fakePi = `#!${process.execPath}
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 const dir = process.env.FAKE_PI_DIRECTORY;
+if (process.platform === "win32") {
+  const owner = process.argv.find(arg => /transcript-owner\\.(?:js|ts)$/.test(arg));
+  const { default: install } = await import(pathToFileURL(owner).href);
+  install({ on(event, listener) { if (event === "session_start") listener({}, { sessionManager: { getSessionFile: () => join(dir, "session.jsonl") } }); } });
+}
 writeFileSync(dir + "/pid", String(process.pid));
 const log = (value) => appendFileSync(dir + "/events", value + "\\n");
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
@@ -27,8 +34,8 @@ async function respond(command) {
   if (command.type === "get_entries") {
     while (process.env.FAKE_DELAY_SNAPSHOT === "1" && !existsSync(dir + "/release-snapshot")) await new Promise(r => setTimeout(r, 5));
   }
-  writeFileSync(dir + "/session.jsonl.kompi-lock", "");
-  const state = { followUpMode: "one-at-a-time", sessionId: "ce4026c9-80b4-4f32-b5a8-84490101680d", sessionFile: dir + "/session.jsonl", sessionName: "Lifecycle", model: { provider: "fake", id: "model" }, thinkingLevel: "off" };
+  if (process.platform !== "win32" && process.env.KOMPI_PI_TRANSCRIPT_LAUNCH === "fresh") writeFileSync(dir + "/session.jsonl.kompi-lock", "");
+  const state = { followUpMode: "one-at-a-time", sessionId: "ce4026c9-80b4-4f32-b5a8-84490101680d", sessionFile: join(dir, "session.jsonl"), sessionName: "Lifecycle", model: { provider: "fake", id: "model" }, thinkingLevel: "off" };
   const data = command.type === "get_state" ? state
     : command.type === "get_entries" ? { entries: [], leafId: null }
     : command.type === "get_available_models" ? { models: [{ provider: "fake", id: "model", name: "Fake" }] }
@@ -58,13 +65,23 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, label: strin
 }
 
 async function fixture(options: { delayState?: boolean; delaySnapshot?: boolean } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "kompi-worker-lifecycle-"));
+  const directory = await mkdtemp(join(tmpdir(), "kompi lifecycle & (literal)-"));
   const executable = join(directory, "fake-pi.mjs");
   await writeFile(executable, fakePi);
   await chmod(executable, 0o700);
+  let cli = executable;
+  if (process.platform === "win32") {
+    // A normal global npm layout; the shim itself must never execute.
+    const pkg = join(directory, "node_modules/@earendil-works/pi-coding-agent");
+    await mkdir(pkg, { recursive: true });
+    await writeFile(join(pkg, "package.json"), JSON.stringify({ bin: { pi: "fake-pi.mjs" } }));
+    await writeFile(join(pkg, "fake-pi.mjs"), fakePi);
+    cli = join(directory, "pi.cmd");
+    await writeFile(cli, "@exit /b 99\r\n");
+  }
   const child = spawn(process.execPath, [resolve(import.meta.dir, "../src/worker.ts")], {
     cwd: directory,
-    env: { ...process.env, HOME: directory, KOMPI_PI_CLI: executable, KOMPI_ANDROID_TOOL_SOCKET: "",
+    env: { KOMPI_NATIVE_BINARY: resolve(import.meta.dir, "../../target/debug/kompi.exe"), ...process.env, HOME: directory, KOMPI_PI_CLI: cli, KOMPI_ANDROID_TOOL_SOCKET: "",
       FAKE_PI_DIRECTORY: directory, FAKE_DELAY_STATE: options.delayState ? "1" : "0",
       FAKE_DELAY_SNAPSHOT: options.delaySnapshot ? "1" : "0" },
     stdio: ["pipe", "pipe", "pipe"],
@@ -114,11 +131,17 @@ afterEach(async () => {
 for (const mode of ["create", "resume"] as const) {
   test(`EOF during delayed ${mode} disposes the late session without publication`, async () => {
     const f = await fixture({ delayState: true });
-    if (mode === "resume") await writeFile(join(f.directory, "session.jsonl"), JSON.stringify({ type: "session", version: 3, id: "ce4026c9-80b4-4f32-b5a8-84490101680d", cwd: f.directory }) + "\n");
+    if (mode === "resume") await writeFile(join(f.directory, "session.jsonl"), JSON.stringify({ type: "session", version: 3, timestamp:"2026-11-13T00:00:00Z", id: "ce4026c9-80b4-4f32-b5a8-84490101680d", cwd: f.directory }) + "\n");
     f.send(mode === "create"
       ? { type: "create", payload: { conversationId: f.conversationId, sessionName: "Lifecycle" } }
       : { type: "resume", payload: { conversationId: f.conversationId, sessionId: "ce4026c9-80b4-4f32-b5a8-84490101680d", sessionFile: join(f.directory, "session.jsonl") } });
     await waitFor(async () => (await f.events()).includes("get_state"), "opening Pi state request");
+    if (mode === "resume" && process.platform === "win32") {
+      // The helper has already exited. Its lease must still belong to the Pi child.
+      const rival = spawnSync(process.env.KOMPI_NATIVE_BINARY ?? resolve(import.meta.dir, "../../target/debug/kompi.exe"),
+        ["__pi-lease", String(process.pid), join(f.directory, "session.jsonl"), "resume"]);
+      expect(rival.status).toBe(73);
+    }
     f.child.stdin.end();
     await Bun.sleep(30);
     await writeFile(join(f.directory, "release-state"), "");

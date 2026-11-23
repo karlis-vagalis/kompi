@@ -1,1 +1,0 @@
-Source: `iroh-tickets` 1.0.0 from crates.io, archive SHA-256 `da53233419ca36bf521ed45683b7748366f9b233032891eefc2d70567a84ac54`. Kompi uses the published Rust source unchanged. The manifest disables postcard's default features: tickets use its standard-library encoder and do not need the embedded `heapless` backend. Upstream MIT and Apache licenses are included.

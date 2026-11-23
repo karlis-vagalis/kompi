@@ -271,6 +271,9 @@ export class PiRpcSessionFactory implements SessionFactory {
 
   async resume(id: ConversationId, expectedSessionId: string | undefined, sessionFile: string): Promise<ConversationSession> {
     if (!isAbsolute(sessionFile)) throw new Error("Pi session path must be absolute");
+    if (process.platform === "win32") {
+      return this.open(id, ["--session", sessionFile], homedir(), expectedSessionId, { path: sessionFile, expectedSessionId });
+    }
     const file = await open(sessionFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const stat = await file.stat();

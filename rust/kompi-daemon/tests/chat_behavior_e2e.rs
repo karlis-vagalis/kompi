@@ -16,11 +16,12 @@ use serde_json::{Value, json};
 use std::{path::PathBuf, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::{UnixListener, UnixStream},
+
     process::{Child, Command},
     time::timeout,
 };
 use uuid::Uuid;
+use kompi_daemon::local_ipc::{self, Listener, ServerStream};
 
 fn id(value: &str) -> RequestId {
     RequestId::parse(value.to_owned()).unwrap()
@@ -141,8 +142,8 @@ impl Phone {
 }
 
 struct WorkerControl {
-    reader: BufReader<tokio::net::unix::OwnedReadHalf>,
-    writer: tokio::net::unix::OwnedWriteHalf,
+    reader: BufReader<tokio::io::ReadHalf<ServerStream>>,
+    writer: tokio::io::WriteHalf<ServerStream>,
     started: Vec<String>,
 }
 impl WorkerControl {
@@ -198,7 +199,7 @@ struct Harness {
     child: Child,
     endpoint: Endpoint,
     address: EndpointAddr,
-    listener: UnixListener,
+    listener: Listener,
     phone: Phone,
 }
 impl Harness {
@@ -218,8 +219,11 @@ impl Harness {
             worker.join("dist-worker/daemon/src/worker.js"),
             include_str!("fixtures/chat-worker.mjs"),
         )?;
+        #[cfg(unix)]
         let control = root.join("worker.sock");
-        let listener = UnixListener::bind(&control)?;
+        #[cfg(windows)]
+        let control = PathBuf::from(format!(r"\\.\pipe\kompi-worker-test-{}", Uuid::new_v4()));
+        let listener = Listener::bind(&control)?;
         let endpoint = Endpoint::builder(presets::N0).bind().await?;
         let store = SqliteStore::open(&state).await?;
         store
@@ -233,13 +237,16 @@ impl Harness {
             .await?;
         drop(store);
         let bun = std::env::split_paths(&std::env::var_os("PATH").context("PATH missing")?)
-            .map(|path| path.join("bun"))
+            .map(|path| path.join(format!("bun{}", std::env::consts::EXE_SUFFIX)))
             .find(|path| path.is_file())
             .context("Install Bun to run daemon behavior E2E")?
             .canonicalize()?;
         let mut child = Command::new(env!("CARGO_BIN_EXE_kompi"))
             .args(["--state-dir", state.to_str().unwrap(), "serve"])
             .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("LOCALAPPDATA", home.join("AppData/Local"))
+            .env("APPDATA", home.join("AppData/Roaming"))
             .env("XDG_CONFIG_HOME", home.join(".config"))
             .env("PI_CODING_AGENT_DIR", home.join(".pi"))
             .env("KOMPI_SDK_WORKER_DIR", &worker)
@@ -264,7 +271,7 @@ impl Harness {
         tokio::spawn(async move { while let Ok(Some(_)) = logs.next_line().await {} });
         let mut socket = timeout(Duration::from_secs(5), async {
             loop {
-                match UnixStream::connect(control_socket_path(&state)).await {
+                match local_ipc::connect(&control_socket_path(&state)).await {
                     Ok(stream) => return stream,
                     Err(_) => tokio::task::yield_now().await,
                 }
@@ -300,9 +307,9 @@ impl Harness {
             phone,
         })
     }
-    async fn worker(&self) -> Result<WorkerControl> {
+    async fn worker(&mut self) -> Result<WorkerControl> {
         let (stream, _) = timeout(Duration::from_secs(20), self.listener.accept()).await??;
-        let (reader, writer) = stream.into_split();
+        let (reader, writer) = tokio::io::split(stream);
         Ok(WorkerControl {
             reader: BufReader::new(reader),
             writer,
@@ -325,6 +332,9 @@ impl Harness {
     }
     async fn stop(&mut self) -> Result<()> {
         // Signal only this isolated child, never a process group or a workstation service.
+        #[cfg(windows)]
+        self.child.start_kill()?;
+        #[cfg(unix)]
         if let Some(pid) = self.child.id() {
             unsafe {
                 libc::kill(pid as i32, libc::SIGTERM);

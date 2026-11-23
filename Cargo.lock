@@ -2041,6 +2041,7 @@ dependencies = [
 [[package]]
 name = "iroh-tickets"
 version = "1.0.0"
+source = "git+https://github.com/karlis-vagalis/iroh-tickets.git?branch=fix%2Fdisable-postcard-default-features#49d2b2b3dd692483cacc42affb7b32a9beaeceb1"
 dependencies = [
  "data-encoding",
  "derive_more",
@@ -2296,6 +2297,7 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

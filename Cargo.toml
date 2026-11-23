@@ -3,7 +3,7 @@ members = ["rust/kompi-protocol", "rust/kompi-daemon"]
 resolver = "2"
 
 [patch.crates-io]
-iroh-tickets = { path = "third-party/iroh-tickets" }
+iroh-tickets = { git = "https://github.com/karlis-vagalis/iroh-tickets.git", branch = "fix/disable-postcard-default-features" }
 
 [workspace.package]
 edition = "2024"
@@ -21,4 +21,7 @@ sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio
 schemars = { version = "1", features = ["derive"] }
 jsonschema = { version = "0.60", default-features = false }
 regex = "1"
+
+[profile.dist]
+inherits = "release"
 

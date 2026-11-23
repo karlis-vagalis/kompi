@@ -30,6 +30,11 @@ daemon-build:
 sdk-build:
     cd daemon && bun install --frozen-lockfile && bun run build
 
+# Build and smoke-test the Linux bundle, including fresh dependency notices/sources.
+daemon-dist:
+    bash scripts/prepare-sources.sh
+    python3 scripts/package-host.py
+
 # Regenerate protocol schemas and clients after changing the wire contract.
 protocol-generate:
     cd protocol && bun run generate

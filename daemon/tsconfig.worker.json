@@ -13,6 +13,7 @@
   },
   "include": [
     "src/worker.ts",
+    "src/conversations/windows-pi-preload.ts",
     "src/conversations/domain.ts",
     "src/conversations/rpc-session-factory.ts",
     "src/conversations/attachment-order.ts",

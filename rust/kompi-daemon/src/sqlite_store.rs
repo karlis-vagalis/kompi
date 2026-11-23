@@ -87,7 +87,10 @@ pub struct SyncSnapshotData {
 /// notifications are written transactionally; no conversation content or model operation
 /// is performed while a database transaction is open.
 #[derive(Clone)]
-pub struct SqliteStore { pool: SqlitePool, path: PathBuf, revision: watch::Sender<u64> }
+pub struct SqliteStore {
+    pool: SqlitePool, path: PathBuf, revision: watch::Sender<u64>,
+    _directory: std::sync::Arc<crate::private_fs::PrivateDirectory>,
+}
 
 pub(crate) struct HistoryDelete {
     pub pi_id: Uuid,
@@ -103,24 +106,24 @@ impl SqliteStore {
 
     pub async fn open(state_directory: impl AsRef<Path>) -> Result<Self> {
         let state_directory = state_directory.as_ref();
-        tokio::fs::create_dir_all(state_directory).await
-            .with_context(|| format!("create SQLite state directory {}", state_directory.display()))?;
-        #[cfg(unix)] {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(state_directory, std::fs::Permissions::from_mode(0o700)).await?;
+        let directory = crate::private_fs::private_dir(state_directory)?;
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let entry = state_directory.join(format!("kompi.sqlite3{suffix}"));
+            match crate::private_fs::private_file(&entry) {
+                Ok(()) => {},
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                Err(e) => return Err(e.into()),
+            }
         }
         let path = state_directory.join("kompi.sqlite3");
         let options = SqliteConnectOptions::new().filename(&path).create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal).foreign_keys(true).busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new().max_connections(8).connect_with(options).await
             .with_context(|| format!("open SQLite store {}", path.display()))?;
-        #[cfg(unix)] {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await?;
-        }
+        crate::private_fs::private_file(&path)?;
         sqlx::query("PRAGMA synchronous = FULL").execute(&pool).await?;
         let (revision, _) = watch::channel(0);
-        let store = Self { pool, path, revision };
+        let store = Self { pool, path, revision, _directory: directory.into() };
         store.migrate().await?;
         Ok(store)
     }

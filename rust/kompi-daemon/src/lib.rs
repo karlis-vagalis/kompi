@@ -1,7 +1,9 @@
 mod chat_timing;
 pub mod cli;
+pub mod local_ipc;
 pub mod lifecycle;
 pub mod registry;
+mod private_fs;
 pub mod store;
 pub mod sqlite_store;
 pub mod session_actor;
@@ -13,5 +15,6 @@ pub mod device_notification;
 pub mod push_crypto;
 mod pi_archive;
 mod pi_history;
+#[cfg(windows)] pub use pi_history::windows::worker_lease;
 
 pub use store::{Device, HostIdentity};

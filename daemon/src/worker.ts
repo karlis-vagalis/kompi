@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { seal, open } from "./conversations/tool-frame.js";
+import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type Socket } from "node:net";
 import { chmodSync, unlinkSync } from "node:fs";
@@ -104,29 +105,38 @@ function currentWorkerPhase(): WorkerPhase {
   return "dispatch";
 }
 const androidToolSocket = process.env.KOMPI_ANDROID_TOOL_SOCKET;
-const pendingAndroidTools = new Map<string, { conversationId: string; socket: Socket; timer: ReturnType<typeof setTimeout> }>();
+const bridgeKey = androidToolSocket && process.platform === "win32" ? randomBytes(32) : undefined;
+const pendingAndroidTools = new Map<string, { conversationId: string; socket: Socket; reply: (line: string) => void; timer: ReturnType<typeof setTimeout> }>();
 const androidToolSockets = new Set<Socket>();
 const androidToolServer = androidToolSocket ? createServer((socket) => {
-  if (lifetime !== "running") { socket.destroy(); return; }
+  if (lifetime !== "running" || (bridgeKey && androidToolSockets.size >= 32)) { socket.destroy(); return; }
   androidToolSockets.add(socket);
   socket.once("close", () => { androidToolSockets.delete(socket); });
   socket.setNoDelay(true);
+  const challenge = bridgeKey ? randomBytes(32).toString("hex") : "";
+  const handshake = bridgeKey ? setTimeout(() => socket.destroy(), 5000) : undefined;
+  if (handshake) socket.once("close", () => clearTimeout(handshake));
+  if (bridgeKey) socket.write(challenge + "\n");
+  socket.on("error", () => socket.destroy());
+  const reply = (line: string) => socket.end(bridgeKey ? seal(bridgeKey, "reply:" + challenge, line) + "\n" : line);
   let input = Buffer.alloc(0);
   let received = false;
   socket.on("data", (chunk) => {
     if (lifetime !== "running" || received) { socket.destroy(); return; }
     input = Buffer.concat([input, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
-    if (input.length > 9_216) { socket.destroy(); return; }
+    if (input.length > (bridgeKey ? 12_400 : 9_216)) { socket.destroy(); return; }
     const newline = input.indexOf(0x0a);
     if (newline < 0) return;
     received = true;
     try {
-      const raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(input.subarray(0, newline))) as { requestId?: unknown; tool?: unknown; actionJson?: unknown };
+      const line = new TextDecoder("utf-8", { fatal: true }).decode(input.subarray(0, newline));
+      const raw = JSON.parse(bridgeKey ? open(bridgeKey, "request:" + challenge, line) : line) as { requestId?: unknown; tool?: unknown; actionJson?: unknown };
       const actionJson = raw.actionJson;
       if (typeof raw.requestId !== "string" || !/^[0-9a-f-]{36}$/i.test(raw.requestId)
         || (raw.tool !== "phone_action" && raw.tool !== "screen_context" && raw.tool !== "send_notification" && raw.tool !== "offer_artifact")
         || (actionJson !== null && typeof actionJson !== "string")
         || (typeof actionJson === "string" && Buffer.byteLength(actionJson, "utf8") > ANDROID_TOOL_ACTION_MAX_BYTES)) throw new Error("invalid tool request");
+      if (handshake) clearTimeout(handshake);
       const tool = raw.tool;
       const live = liveSession;
       if (!live || pendingAndroidTools.has(raw.requestId) || pendingAndroidTools.size >= 8) throw new Error("tool unavailable");
@@ -144,10 +154,10 @@ const androidToolServer = androidToolSocket ? createServer((socket) => {
         if (!pending) return;
         pendingAndroidTools.delete(requestId);
         const errorMessage = tool === "offer_artifact" ? "The host did not finish preparing the file offer." : "Android did not respond before the tool request expired. The phone may already have acted; do not retry automatically.";
-        socket.end(`${JSON.stringify({ requestId, response: { success: false, errorCode: "timeout", errorMessage } })}\n`);
+        reply(`${JSON.stringify({ requestId, response: { success: false, errorCode: "timeout", errorMessage } })}\n`);
         if (tool !== "offer_artifact") send(`android-tool-cancel-${requestId}`, { type: "android-tool-cancel", payload: { conversationId: live.conversationId, requestId } });
       }, timeoutMs);
-      pendingAndroidTools.set(requestId, { conversationId: live.conversationId, socket, timer });
+      pendingAndroidTools.set(requestId, { conversationId: live.conversationId, socket, reply, timer });
       socket.once("close", () => {
         const pending = pendingAndroidTools.get(requestId);
         if (pending?.socket === socket) {
@@ -158,11 +168,18 @@ const androidToolServer = androidToolSocket ? createServer((socket) => {
       });
       send(`android-tool-request-${requestId}`, request);
     } catch {
-      socket.end(`${JSON.stringify({ requestId: "invalid", response: { success: false, errorCode: "invalid-request", errorMessage: "The Android tool request was invalid." } })}\n`);
+      reply(`${JSON.stringify({ requestId: "invalid", response: { success: false, errorCode: "invalid-request", errorMessage: "The Android tool request was invalid." } })}\n`);
     }
   });
 }) : undefined;
-if (androidToolSocket && androidToolServer) {
+if (bridgeKey && androidToolServer) {
+  androidToolServer.listen({host: "127.0.0.1", port: 0, exclusive: true});
+  await once(androidToolServer, "listening");
+  const address = androidToolServer.address();
+  if (!address || typeof address === "string") throw new Error("tool bridge bind failed");
+  process.env.KOMPI_TOOL_BRIDGE_PORT = String(address.port);
+  process.env.KOMPI_TOOL_BRIDGE_KEY = bridgeKey.toString("hex");
+} else if (androidToolSocket && androidToolServer) {
   try { unlinkSync(androidToolSocket); } catch { /* unique per-worker path may not exist */ }
   androidToolServer.listen(androidToolSocket, () => {
     try { chmodSync(androidToolSocket, 0o600); } catch { /* socket path is unique and private to this worker */ }
@@ -216,14 +233,14 @@ const factory = new PiRpcSessionFactory({
 function closeAndroidToolBridge(): void {
   for (const [requestId, pending] of pendingAndroidTools) {
     clearTimeout(pending.timer);
-    pending.socket.end(`${JSON.stringify({ requestId, response: { success: false, errorCode: "unavailable", errorMessage: "The Android tool bridge closed after dispatch. The phone may already have acted; do not retry automatically." } })}\n`);
+    pending.reply(`${JSON.stringify({ requestId, response: { success: false, errorCode: "unavailable", errorMessage: "The Android tool bridge closed after dispatch. The phone may already have acted; do not retry automatically." } })}\n`);
   }
   pendingAndroidTools.clear();
   // Include incomplete/idle tool clients, not only requests already registered above.
   for (const socket of androidToolSockets) socket.destroySoon();
   androidToolSockets.clear();
   androidToolServer?.close();
-  if (androidToolSocket) { try { unlinkSync(androidToolSocket); } catch { /* already removed */ } }
+  if (androidToolSocket && !bridgeKey) { try { unlinkSync(androidToolSocket); } catch { /* already removed */ } }
 }
 
 function send(id: string, message: WorkerEvent): void {
@@ -372,7 +389,7 @@ async function handleRequest(envelope: ReturnType<typeof parseWorkerRequest>): P
       if (!pending || pending.conversationId !== payload.conversationId) return;
       clearTimeout(pending.timer);
       pendingAndroidTools.delete(payload.requestId);
-      pending.socket.end(`${JSON.stringify({ requestId: payload.requestId, response: {
+      pending.reply(`${JSON.stringify({ requestId: payload.requestId, response: {
         success: payload.success,
         ...(payload.resultJson ? { resultJson: payload.resultJson } : {}),
         ...(!payload.success ? { errorCode: payload.errorCode, errorMessage: payload.errorMessage } : {}),
