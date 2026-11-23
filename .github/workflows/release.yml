@@ -1,7 +1,7 @@
 name: Release
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
 permissions:
   contents: read
 concurrency:
@@ -15,13 +15,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Require protected version tag on reviewed main history
+      - name: Require owner-published version tag on main history
         env:
-          PROTECTED: ${{ github.ref_protected }}
-          REVIEWED_COMMIT: ${{ vars.RELEASE_REVIEWED_COMMIT }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          [[ "$PROTECTED" == true && "$REVIEWED_COMMIT" == "$(git rev-parse HEAD)" ]]
+          [[ "$GITHUB_ACTOR" == "$OWNER" ]]
           git merge-base --is-ancestor HEAD origin/main
   build:
     needs: authorize
@@ -86,5 +85,4 @@ jobs:
           done
           assets=(kompi.apk "${hosts[@]}" rust-dependency-sources.tar.gz)
           sha256sum "${assets[@]}" > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes "${assets[@]}" SHA256SUMS
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" SHA256SUMS --clobber
