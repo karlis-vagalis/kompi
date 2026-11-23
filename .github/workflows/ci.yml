@@ -87,6 +87,12 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-37.0' 'build-tools;36.0.0' 'ndk;30.0.16248370' 'cmake;4.1.2'
       - working-directory: android
         run: ./gradlew --no-daemon :app:testDebugUnitTest
+      - name: Install native build tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/native-tools"
+          "$RUNNER_TEMP/native-tools/bin/pip" install 'uv==0.11.26'
+          echo "$RUNNER_TEMP/native-tools/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/cmake/4.1.2/bin" >> "$GITHUB_PATH"
       - run: android/app/src/main/cpp/whistle/fetch-native.sh
       - run: just apk-release
       - if: inputs.package || (github.event_name == 'push' && github.ref == 'refs/heads/main')
