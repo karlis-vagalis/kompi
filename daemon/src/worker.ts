@@ -1,3 +1,4 @@
+import { PiReadPressure } from "./pi-read-pressure.js";
 import { seal, open } from "./conversations/tool-frame.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -17,6 +18,7 @@ process.env.KOMPI_SDK_WORKER = "1";
 const MAX_LINE_BYTES = 65_536;
 const MAX_QUEUED_OUTPUT_BYTES = MAX_LINE_BYTES * 4;
 let failed = false;
+
 type WorkerLifetime = "running" | "closing" | "closed";
 let lifetime: WorkerLifetime = "running";
 const ownerClosed = new AbortController();
@@ -219,7 +221,7 @@ const factory = new PiRpcSessionFactory({
     send(active.envelopeId, { type: "follow-up-ready", payload: { stats: checkpoint.stats } });
   },
   event: (conversationId, sessionId, epoch, sequence, event, pause) => {
-    if (lifetime !== "running") return;
+    if (lifetime !== "running" || (liveSession?.session.epoch === epoch && sessionDisposals.has(liveSession.session))) return;
     const requestId = liveSession?.conversationId === conversationId ? liveSession.active?.requestId : undefined;
     void queuePiRecord(conversationId, sessionId, epoch, sequence, "event", event, requestId ?? null, pause).catch(() => undefined);
     if (liveSession && requestId && (event.type === "message_end" || event.type === "agent_settled")) {
@@ -302,17 +304,16 @@ function syncCanonical(live: WorkerSession, requestId: string | null, settled = 
 }
 
 let piOutput: Promise<void> = Promise.resolve();
-let queuedPiBytes = 0;
-function queuePiRecord(conversationId: string, sessionId: string, epoch: string, sequence: number, kind: "event" | "snapshot" | "entries" | "settled", value: unknown, requestId: string | null, pause: (paused: boolean) => void = () => {}): Promise<void> {
+const piPressure = new PiReadPressure();
+function queuePiRecord(conversationId: string, sessionId: string, epoch: string, sequence: number, kind: "event" | "snapshot" | "entries" | "settled", value: unknown, requestId: string | null, pause?: (paused: boolean) => void): Promise<void> {
   if (lifetime !== "running") return Promise.resolve();
   const json = JSON.stringify(value);
   const bytes = Buffer.byteLength(json);
-  if (bytes > 64 * 1024 * 1024 || queuedPiBytes + bytes > 128 * 1024 * 1024) {
+  if (bytes > 64 * 1024 * 1024 || piPressure.bytes + bytes > 128 * 1024 * 1024) {
     failClosed("response-backpressure-overflow");
     return Promise.reject(new Error("Pi record exceeds transfer capacity"));
   }
-  queuedPiBytes += bytes;
-  if (queuedPiBytes > 1024 * 1024) pause(true);
+  piPressure.enqueue(bytes, epoch, pause);
   const next = piOutput.then(async () => {
     let offset = 0;
     let part = 0;
@@ -327,7 +328,7 @@ function queuePiRecord(conversationId: string, sessionId: string, epoch: string,
         json: fragment, requestId,
       } } });
     }
-  }).finally(() => { queuedPiBytes -= bytes; if (queuedPiBytes < 512 * 1024) pause(false); });
+  }).finally(() => piPressure.complete(bytes));
   piOutput = next.catch(() => { failClosed("response-backpressure-overflow"); });
   return next;
 }
@@ -602,6 +603,7 @@ async function handleRequest(envelope: ReturnType<typeof parseWorkerRequest>): P
 }
 
 function disposeSession(session: ConversationSession): Promise<void> {
+  piPressure.resume(session.epoch);
   let disposal = sessionDisposals.get(session);
   if (!disposal) {
     disposal = Promise.resolve().then(() => session.dispose());
@@ -622,6 +624,7 @@ async function disposeAfterOwnerClosed(session: ConversationSession): Promise<vo
 function closeOwner(): Promise<void> {
   if (closing) return closing;
   lifetime = "closing";
+  piPressure.resumeAll();
   ownerClosed.abort();
   queuedOutput.length = 0;
   queuedOutputBytes = 0;

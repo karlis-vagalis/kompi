@@ -3,7 +3,8 @@ import { access } from "node:fs/promises";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { NOTIFICATION_INPUT_MAX_BYTES } from "./protocol/generated.js";
+import { z } from "zod";
+import { parseControlMessage, PairingPayloadSchema, NOTIFICATION_INPUT_MAX_BYTES } from "./protocol/generated.js";
 
 const execFile = promisify(execFileCallback);
 const extensionDirectory = dirname(fileURLToPath(import.meta.url));
@@ -82,15 +83,6 @@ async function runKompi(args: readonly string[], options: RunOptions = {}): Prom
     throw new NativeCliError(detail, typeof cause.code === "number" ? cause.code : undefined);
   }
 }
-
-export interface CliSuccess {
-  ok: true;
-}
-export interface CliFailure {
-  ok: false;
-  error: { code: string; message: string };
-}
-export type CliResult<T extends object> = (CliSuccess & T) | CliFailure;
 
 const MAX_NOTIFICATION_STDIN_BYTES = NOTIFICATION_INPUT_MAX_BYTES;
 const MAX_NOTIFICATION_OUTPUT_BYTES = 16 * 1024;
@@ -202,7 +194,7 @@ export async function runNotificationJsonOutput(
   });
 }
 
-export async function runJson<T extends object>(args: readonly string[], options: RunOptions = {}): Promise<CliSuccess & T> {
+async function runJson(args: readonly string[], options: RunOptions = {}) {
   const stdout = await runKompi(args, options);
   const operationLabel = options.operationLabel ?? `kompi ${args[0] ?? "command"}`;
   let result: unknown;
@@ -211,11 +203,40 @@ export async function runJson<T extends object>(args: readonly string[], options
     const message = `${operationLabel} did not return valid JSON${options.redactInput ? "; command input omitted for privacy" : ""}`;
     throw options.redactInput ? new NativeCliError(message) : new Error(message);
   }
-  if (typeof result !== "object" || result === null || typeof (result as { ok?: unknown }).ok !== "boolean") {
+  const envelope = z.discriminatedUnion("ok", [
+    z.object({ ok: z.literal(true) }).passthrough(),
+    z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string() }) }),
+  ]).safeParse(result);
+  if (!envelope.success) {
     const message = `${operationLabel} returned an invalid JSON result${options.redactInput ? "; command input omitted for privacy" : ""}`;
     throw options.redactInput ? new NativeCliError(message) : new Error(message);
   }
-  const envelope = result as CliResult<T>;
-  if (!envelope.ok) throw new NativeCliError(envelope.error?.message ?? "Native CLI operation failed");
-  return envelope as CliSuccess & T;
+  if (!envelope.data.ok) throw new NativeCliError(envelope.data.error.message);
+  const { ok, ...payload } = envelope.data;
+  return payload;
+}
+
+export async function runStatusJson() {
+  const result = parseControlMessage({ type: "status-result", payload: await runJson(["status", "--json"]) });
+  if (result.type !== "status-result") throw new NativeCliError("Invalid status result");
+  return result.payload;
+}
+
+export async function runDevicesJson() {
+  const result = parseControlMessage({ type: "devices-result", payload: await runJson(["devices", "list", "--json"]) });
+  if (result.type !== "devices-result") throw new NativeCliError("Invalid devices list");
+  return result.payload;
+}
+
+export async function runRevokeJson(endpoint: string) {
+  z.object({ operation: z.literal("device-revoked") }).parse(await runJson(["devices", "revoke", endpoint, "--json"]));
+}
+
+export async function runPairJson(args: readonly string[]) {
+  const result = z.object({ pairing: z.object({ qr: z.string().max(8192), terminalQr: z.string().min(1),
+    pngBase64: z.string().min(1).base64(), name: z.string().min(1).max(128), expiresAt: z.string().datetime({ offset: true }), token: z.string().min(1).max(8192).optional(),
+  }) }).parse(await runJson(args));
+  try { PairingPayloadSchema.parse(JSON.parse(result.pairing.qr)); }
+  catch { throw new NativeCliError("Invalid pairing QR payload"); }
+  return result;
 }

@@ -19,6 +19,18 @@ after(async () => {
   for (const directory of temporaryDirectories) await rm(directory, { recursive: true, force: true });
 });
 
+test("an ok envelope alone is not a successful command result", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kompi-malformed-cli-"));
+  temporaryDirectories.push(directory);
+  const binary = join(directory, "kompi-fixture");
+  await writeFile(binary, `#!${process.execPath}\nconsole.log('{"ok":true}');\n`, { mode: 0o700 });
+  process.env.KOMPI_BIN = binary;
+  const bridge = new NativeBridge();
+  for (const run of [() => bridge.listDevices(), () => bridge.status(), () => bridge.createPairing(undefined, false), () => bridge.revokeDevice("a".repeat(64))]) {
+    await assert.rejects(run, /service is unavailable/);
+  }
+});
+
 test("terminal notification honors typed statuses despite CLI ok:false and nonzero exit", async () => {
   const directory = await mkdtemp(join(tmpdir(), "kompi-notify-status-"));
   temporaryDirectories.push(directory);

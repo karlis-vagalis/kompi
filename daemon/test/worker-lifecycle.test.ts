@@ -36,8 +36,10 @@ async function respond(command) {
   }
   if (process.platform !== "win32" && process.env.KOMPI_PI_TRANSCRIPT_LAUNCH === "fresh") writeFileSync(dir + "/session.jsonl.kompi-lock", "");
   const state = { followUpMode: "one-at-a-time", sessionId: "ce4026c9-80b4-4f32-b5a8-84490101680d", sessionFile: join(dir, "session.jsonl"), sessionName: "Lifecycle", model: { provider: "fake", id: "model" }, thinkingLevel: "off" };
+  const large = command.type === "get_entries" && existsSync(dir + "/large-snapshot");
+  if (large) send({ type: "fixture_event", text: "e".repeat(1024 * 1024) });
   const data = command.type === "get_state" ? state
-    : command.type === "get_entries" ? { entries: [], leafId: null }
+    : command.type === "get_entries" ? { entries: [], leafId: null, ...(large ? { text: "s".repeat(512 * 1024) } : {}) }
     : command.type === "get_available_models" ? { models: [{ provider: "fake", id: "model", name: "Fake" }] }
     : command.type === "get_available_thinking_levels" ? { levels: ["off"] }
     : command.type === "prompt" ? { disposition: "started" } : {};
@@ -173,6 +175,22 @@ test("EOF aborts an active prompt and disposes only its owned Pi child", async (
   expect(await f.events()).toContain("abort");
   expect(f.frames().some(frame => frame.message.type === "final")).toBe(false);
 }, 10_000);
+
+test("a large event followed by a large snapshot leaves the reader available for another request", async () => {
+  const f = await fixture();
+  f.send({ type: "create", payload: { conversationId: f.conversationId, sessionName: "Lifecycle" } });
+  await waitFor(() => f.frames().some(frame => frame.message.type === "created"), "created");
+  await writeFile(join(f.directory, "large-snapshot"), "");
+  const snapshot = () => f.send({ type: "snapshot", payload: { conversationId: f.conversationId } });
+  const completed = () => f.frames().filter(frame => frame.message.type === "snapshot-done").length;
+  snapshot();
+  await waitFor(() => completed() === 1, "large snapshot");
+  await rm(join(f.directory, "large-snapshot"));
+  snapshot();
+  await waitFor(() => completed() === 2, "subsequent snapshot");
+  f.child.stdin.end();
+  await f.finish(0);
+}, 15_000);
 
 test("EOF during the prompt snapshot cannot dispatch a prompt afterwards", async () => {
   const f = await fixture({ delaySnapshot: true });
