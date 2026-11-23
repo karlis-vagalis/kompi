@@ -49,4 +49,11 @@ Gradle versions are pinned in [`app/build.gradle.kts`](app/build.gradle.kts). Th
 - Speech recognition and synthesis models downloaded by the app are separate from the APK and subject to the corresponding model cards and terms. Code uses Android's system monospace font.
 - Synthetic instrumentation speech fixtures have [documented provenance](app/src/androidTest/assets/live-speech-fixtures/provenance.md).
 
-Before redistribution, inspect `./gradlew :app:dependencies --configuration releaseRuntimeClasspath` and retain all applicable notices for the resolved versions, including transitive and native components.
+## Notices in the APK
+
+[`assets/licenses/runtime-index.tsv`](app/src/main/assets/licenses/runtime-index.tsv) maps notices found in resolved release AARs and JARs (including nested JARs) to their packaged copies. Identical texts are stored once. Some artifacts do not contain a notice file; absence from this index is not a license grant. Use `./gradlew :app:dependencies --configuration releaseRuntimeClasspath` to inspect the full dependency graph.
+
+- MediaPipe Tasks Audio and Tasks Core 1.2.0 contain the same `META-INF/NOTICE`. The APK preserves it as `licenses/mediapipe-NOTICE`.
+- ONNX Runtime's license and third-party notices come from the [official 1.32.0 NuGet distribution](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.32.0), which also ships an Android AAR. The 1DS license is from the Maven AAR's classes.jar. The two AARs are not byte-identical.
+- Additional asset notices cover Compose Unstyled, Compose Icons and the underlying Lucide/Feather artwork, protobuf, and iroh-ffi. The iroh-ffi license covers the bindings, not every crate linked into its native libraries. The [upstream 1.2.0 source and Cargo.lock](https://github.com/n0-computer/iroh-ffi/tree/66a8d619a4d791d458d582f312df6e0ab42bc541) are separate from the host workspace.
+
