@@ -2,6 +2,25 @@
 
 The Rust daemon starts one Bun worker per active phone conversation. The worker runs the installed Pi CLI in RPC mode under the daemon account; its tools, environment and permissions apply to requests from paired phones.
 
+## Released worker setup
+
+For v0.1.0, run this once after installing or upgrading the daemon. It installs the locked dependencies for the matching Pi worker. Then run `kompi serve`.
+
+**Linux**
+```sh
+worker=$(kompi setup-worker) && (cd "$worker" && bun install --production --frozen-lockfile)
+```
+
+**Windows PowerShell**
+```powershell
+$worker = kompi setup-worker
+if ($LASTEXITCODE -ne 0) { throw "Worker setup failed" }
+Push-Location -LiteralPath $worker
+try { bun install --production --frozen-lockfile; if ($LASTEXITCODE -ne 0) { throw "Dependency install failed" } } finally { Pop-Location }
+```
+
+## Build from source
+
 Build from the repository root:
 
 ```sh

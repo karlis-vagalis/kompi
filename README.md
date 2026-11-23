@@ -31,30 +31,19 @@ I built Kompi (*Pi companion*) because not everything I want from Pi is a coding
 
    **GNU Linux**
    ```sh
-   curl -fL https://github.com/karlis-vagalis/kompi/releases/latest/download/kompi-daemon-installer.sh -o kompi-daemon-installer.sh && sh kompi-daemon-installer.sh
+   curl -fsSL https://github.com/karlis-vagalis/kompi/releases/latest/download/kompi-daemon-installer.sh | sh
    ```
 
    **Windows PowerShell**
    ```powershell
-   Invoke-WebRequest https://github.com/karlis-vagalis/kompi/releases/latest/download/kompi-daemon-installer.ps1 -OutFile kompi-daemon-installer.ps1 -ErrorAction Stop
-   .\kompi-daemon-installer.ps1
+   irm https://github.com/karlis-vagalis/kompi/releases/latest/download/kompi-daemon-installer.ps1 | iex
    ```
 
    If your system policy doesn't allow the installer, download the [Linux archive](https://github.com/karlis-vagalis/kompi/releases/latest/download/kompi-daemon-x86_64-unknown-linux-gnu.tar.gz) or [Windows ZIP](https://github.com/karlis-vagalis/kompi/releases/latest/download/kompi-daemon-x86_64-pc-windows-msvc.zip) instead. Extract into a dedicated directory and use the full path to the extracted executable in place of `kompi` below.
 
-3. Open a new terminal so the installed command is on your PATH. Prepare the matching worker dependencies, then start the daemon:
+3. Open a new terminal. For v0.1.0, [prepare the worker once](daemon/README.md#released-worker-setup), then start Pi’s companion:
 
-   **GNU Linux**
    ```sh
-   worker=$(kompi setup-worker) && (cd "$worker" && bun install --production --frozen-lockfile) && kompi serve
-   ```
-
-   **Windows PowerShell**
-   ```powershell
-   $worker = kompi setup-worker
-   if ($LASTEXITCODE -ne 0) { throw "Worker setup failed" }
-   Push-Location -LiteralPath $worker
-   try { bun install --production --frozen-lockfile; if ($LASTEXITCODE -ne 0) { throw "Dependency install failed" } } finally { Pop-Location }
    kompi serve
    ```
 
