@@ -1,0 +1,38 @@
+# Dependency and build output
+/target/
+node_modules/
+dist/
+/daemon/dist-worker/
+.gradle/
+.kotlin/
+.cxx/
+__pycache__/
+android/app/src/main/cpp/whistle/prebuilt/
+**/build/
+local.properties
+*.apk
+*.aab
+*.hprof
+
+# Local identities, request ledgers and credentials
+.kompi/
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+
+# Offline models and downloaded release assets
+android/app/src/main/assets/models/
+models/
+*.onnx
+!android/app/src/main/assets/vad/silero-v6.2.3.onnx
+*.cact
+*.aar
+*.tar.bz2
+*.tar.gz
+
+# Editors / host files
+.idea/
+.vscode/
+.DS_Store

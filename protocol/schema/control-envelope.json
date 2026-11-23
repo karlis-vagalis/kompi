@@ -1,0 +1,917 @@
+{
+  "$defs": {
+    "AgentNotification": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "rich": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RichNotificationOptions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body"
+      ],
+      "type": "object"
+    },
+    "ControlMessage": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "type": {
+              "const": "status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "type": {
+              "const": "devices-list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "endpoint": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "endpoint"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "device-revoke",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "body": {
+                  "maxLength": 2000,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "endpoint": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                "requestId": {
+                  "$ref": "#/$defs/RequestId"
+                },
+                "title": {
+                  "maxLength": 120,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "endpoint",
+                "requestId",
+                "title",
+                "body"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "device-notification",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "endpoint": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                "notification": {
+                  "$ref": "#/$defs/AgentNotification"
+                },
+                "requestId": {
+                  "$ref": "#/$defs/RequestId"
+                }
+              },
+              "required": [
+                "endpoint",
+                "requestId",
+                "notification"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "device-rich-notification",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "maxLength": 64,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "endpoint": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                "message": {
+                  "maxLength": 512,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "$ref": "#/$defs/DeviceNotificationStatus"
+                }
+              },
+              "required": [
+                "endpoint",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "device-notification-result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "origin": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "origin"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "push-allow-origin",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "type": {
+              "const": "push-allowed-origins-list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "origin": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "origin"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "push-allowed-origin-revoke",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "origins": {
+                  "items": {
+                    "maxLength": 256,
+                    "type": "string"
+                  },
+                  "maxItems": 128,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "origins"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "push-allowed-origins-result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            "type": {
+              "const": "pairing-create",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "operation": {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "operation"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "ok",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "controlSocket": {
+                  "maxLength": 4096,
+                  "type": "string"
+                },
+                "endpoint": {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pairedDevices": {
+                  "items": {
+                    "$ref": "#/$defs/DeviceSummary"
+                  },
+                  "maxItems": 128,
+                  "type": "array"
+                },
+                "running": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "running",
+                "controlSocket",
+                "pairedDevices"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "status-result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "devices": {
+                  "items": {
+                    "$ref": "#/$defs/DeviceSummary"
+                  },
+                  "maxItems": 128,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "devices"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "devices-result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "expiresAt": {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                "qr": {
+                  "maxLength": 8192,
+                  "type": "string"
+                },
+                "token": {
+                  "maxLength": 8192,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "qr",
+                "expiresAt"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "pairing-result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "message": {
+                  "maxLength": 2048,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "DeviceNotificationStatus": {
+      "enum": [
+        "queued",
+        "push-accepted",
+        "posted",
+        "not-posted",
+        "unknown",
+        "offline",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "DeviceSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "lastSeen": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "format": "date-time"
+        },
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "pairedAt": {
+          "$ref": "#/$defs/Timestamp",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "endpoint",
+        "name",
+        "pairedAt"
+      ],
+      "type": "object"
+    },
+    "NotificationButton": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 40,
+          "minLength": 1,
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/NotificationTarget"
+        }
+      },
+      "required": [
+        "label",
+        "target"
+      ],
+      "type": "object"
+    },
+    "NotificationImage": {
+      "additionalProperties": false,
+      "properties": {
+        "base64": {
+          "description": "Canonical unpadded base64url, never a URL or a local path. PNG/JPEG only.",
+          "maxLength": 16384,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "base64"
+      ],
+      "type": "object"
+    },
+    "NotificationProgress": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "type": {
+              "const": "indeterminate",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "percent": {
+                  "format": "uint32",
+                  "maximum": 100,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "percent"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "determinate",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NotificationStyle": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "maxLength": 8000,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "big-text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "lines": {
+                  "items": {
+                    "maxLength": 500,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "maxItems": 8,
+                  "minItems": 1,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "lines"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "inbox",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "$ref": "#/$defs/NotificationImage"
+                }
+              },
+              "required": [
+                "image"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "big-picture",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NotificationTarget": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "type": {
+              "const": "open-kompi",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "url": {
+                  "maxLength": 2048,
+                  "minLength": 9,
+                  "pattern": "^https://[^/@\\s\\x00-\\x20\\x7f]+(?:[/?#][^\\s\\x00-\\x20\\x7f]*)?$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "https",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RequestId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "type": "string"
+    },
+    "RichNotificationOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "buttons": {
+          "items": {
+            "$ref": "#/$defs/NotificationButton"
+          },
+          "maxItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "group": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:-]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotificationProgress"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "silent": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "style": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotificationStyle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subtext": {
+          "maxLength": 120,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "description": "A new request ID can replace this host's earlier tag. Reusing an ID is never an update.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:-]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeoutMs": {
+          "format": "uint32",
+          "maximum": 86400000,
+          "minimum": 1000,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Timestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/RequestId"
+    },
+    "message": {
+      "$ref": "#/$defs/ControlMessage"
+    },
+    "v": {
+      "format": "uint8",
+      "maximum": 4,
+      "minimum": 4,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "v",
+    "id",
+    "message"
+  ],
+  "title": "Envelope",
+  "type": "object"
+}

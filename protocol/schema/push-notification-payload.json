@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "PushRegistrationId": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "RequestId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "RFC8291 plaintext packet; serialize once, then authenticate those exact bytes before encryption.",
+  "properties": {
+    "body": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "type": "string"
+    },
+    "expiresAtMs": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "hostEndpoint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "issuedAtMs": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "notificationId": {
+      "$ref": "#/$defs/RequestId"
+    },
+    "registrationId": {
+      "$ref": "#/$defs/PushRegistrationId"
+    },
+    "title": {
+      "maxLength": 120,
+      "minLength": 1,
+      "type": "string"
+    },
+    "version": {
+      "format": "uint8",
+      "maximum": 1,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "hostEndpoint",
+    "registrationId",
+    "notificationId",
+    "issuedAtMs",
+    "expiresAtMs",
+    "title",
+    "body"
+  ],
+  "title": "PushNotificationPayload",
+  "type": "object"
+}

@@ -1,0 +1,625 @@
+{
+  "$defs": {
+    "ChatModelConfiguration": {
+      "additionalProperties": false,
+      "properties": {
+        "effort": {
+          "$ref": "#/$defs/EffortLevel"
+        },
+        "modelId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "provider": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "modelId",
+        "effort"
+      ],
+      "type": "object"
+    },
+    "ConversationId": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "Delivery": {
+      "enum": [
+        "followUp"
+      ],
+      "type": "string"
+    },
+    "EffortLevel": {
+      "enum": [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "type": "string"
+    },
+    "PiUiAnswer": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "type": {
+              "const": "cancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "index": {
+                  "format": "int32",
+                  "maximum": 31,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "index"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "selected",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "confirmed": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "confirmed"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "confirmed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "maxLength": 16000,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RequestId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "type": "string"
+    },
+    "Timestamp": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "UiInteractionId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "type": "string"
+    },
+    "WorkerAttachmentRef": {
+      "additionalProperties": false,
+      "properties": {
+        "fileName": {
+          "maxLength": 255,
+          "type": "string"
+        },
+        "length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mediaType": {
+          "maxLength": 127,
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 4096,
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "uploadId": {
+          "$ref": "#/$defs/ConversationId"
+        }
+      },
+      "required": [
+        "uploadId",
+        "fileName",
+        "mediaType",
+        "length",
+        "sha256",
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "type": {
+          "const": "models-get",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "conversationId": {
+              "$ref": "#/$defs/ConversationId"
+            },
+            "requestId": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequestId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "conversationId"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "snapshot",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "answer": {
+              "$ref": "#/$defs/PiUiAnswer"
+            },
+            "conversationId": {
+              "$ref": "#/$defs/ConversationId"
+            },
+            "interactionId": {
+              "$ref": "#/$defs/UiInteractionId"
+            }
+          },
+          "required": [
+            "conversationId",
+            "interactionId",
+            "answer"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "ui-response",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "conversationId": {
+              "$ref": "#/$defs/ConversationId"
+            },
+            "errorCode": {
+              "maxLength": 64,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "errorMessage": {
+              "maxLength": 512,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "requestId": {
+              "$ref": "#/$defs/RequestId"
+            },
+            "resultJson": {
+              "maxLength": 16384,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "success": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "conversationId",
+            "requestId",
+            "success"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "android-tool-response",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "conversationId": {
+              "$ref": "#/$defs/ConversationId"
+            },
+            "createdAt": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "phoneLabel": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sessionName": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId",
+            "createdAt",
+            "sessionName"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "create",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "conversationId": {
+              "$ref": "#/$defs/ConversationId"
+            },
+            "sessionFile": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionId": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "conversationId",
+            "sessionFile"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "resume",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "attachments": {
+              "items": {
+                "$ref": "#/$defs/WorkerAttachmentRef"
+              },
+              "maxItems": 16,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "configuration": {
+              "$ref": "#/$defs/ChatModelConfiguration"
+            },
+            "conversationId": {
+              "$ref": "#/$defs/ConversationId"
+            },
+            "delivery": {
+              "$ref": "#/$defs/Delivery"
+            },
+            "requestId": {
+              "$ref": "#/$defs/RequestId"
+            },
+            "text": {
+              "maxLength": 16000,
+              "type": "string",
+              "x-kompi-transform": "trim"
+            }
+          },
+          "required": [
+            "requestId",
+            "conversationId",
+            "text",
+            "delivery",
+            "configuration"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "prompt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "attachments": {
+              "items": {
+                "$ref": "#/$defs/WorkerAttachmentRef"
+              },
+              "maxItems": 16,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "configuration": {
+              "$ref": "#/$defs/ChatModelConfiguration"
+            },
+            "conversationId": {
+              "$ref": "#/$defs/ConversationId"
+            },
+            "requestId": {
+              "$ref": "#/$defs/RequestId"
+            },
+            "text": {
+              "maxLength": 16000,
+              "type": "string",
+              "x-kompi-transform": "trim"
+            }
+          },
+          "required": [
+            "requestId",
+            "conversationId",
+            "text",
+            "configuration"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "follow-up-add",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "conversationId": {
+              "$ref": "#/$defs/ConversationId"
+            }
+          },
+          "required": [
+            "conversationId"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "follow-up-release",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "conversationId": {
+              "$ref": "#/$defs/ConversationId"
+            },
+            "requestId": {
+              "$ref": "#/$defs/RequestId"
+            }
+          },
+          "required": [
+            "requestId",
+            "conversationId"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "abort",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "conversationId": {
+              "$ref": "#/$defs/ConversationId"
+            }
+          },
+          "required": [
+            "conversationId"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "dispose",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "WorkerRequest"
+}

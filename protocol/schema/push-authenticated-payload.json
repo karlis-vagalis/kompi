@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Application-level MAC wrapper carried inside RFC8291 ciphertext.",
+  "properties": {
+    "mac": {
+      "maxLength": 43,
+      "minLength": 43,
+      "type": "string"
+    },
+    "payload": {
+      "maxLength": 32768,
+      "type": "string"
+    },
+    "version": {
+      "format": "uint8",
+      "maximum": 1,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "payload",
+    "mac"
+  ],
+  "title": "PushAuthenticatedPayload",
+  "type": "object"
+}

@@ -1,0 +1,339 @@
+{
+  "$defs": {
+    "NotificationButton": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "maxLength": 40,
+          "minLength": 1,
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/NotificationTarget"
+        }
+      },
+      "required": [
+        "label",
+        "target"
+      ],
+      "type": "object"
+    },
+    "NotificationImage": {
+      "additionalProperties": false,
+      "properties": {
+        "base64": {
+          "description": "Canonical unpadded base64url, never a URL or a local path. PNG/JPEG only.",
+          "maxLength": 16384,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "base64"
+      ],
+      "type": "object"
+    },
+    "NotificationProgress": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "type": {
+              "const": "indeterminate",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "percent": {
+                  "format": "uint32",
+                  "maximum": 100,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "percent"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "determinate",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NotificationStyle": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "maxLength": 8000,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "big-text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "lines": {
+                  "items": {
+                    "maxLength": 500,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "maxItems": 8,
+                  "minItems": 1,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "lines"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "inbox",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "$ref": "#/$defs/NotificationImage"
+                }
+              },
+              "required": [
+                "image"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "big-picture",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NotificationTarget": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "type": {
+              "const": "open-kompi",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "additionalProperties": false,
+              "properties": {
+                "url": {
+                  "maxLength": 2048,
+                  "minLength": 9,
+                  "pattern": "^https://[^/@\\s\\x00-\\x20\\x7f]+(?:[/?#][^\\s\\x00-\\x20\\x7f]*)?$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "https",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RichNotificationOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "buttons": {
+          "items": {
+            "$ref": "#/$defs/NotificationButton"
+          },
+          "maxItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "group": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:-]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotificationProgress"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "silent": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "style": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotificationStyle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subtext": {
+          "maxLength": 120,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "description": "A new request ID can replace this host's earlier tag. Reusing an ID is never an update.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:-]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeoutMs": {
+          "format": "uint32",
+          "maximum": 86400000,
+          "minimum": 1000,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "body": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "type": "string"
+    },
+    "rich": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RichNotificationOptions"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "title": {
+      "maxLength": 120,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "body"
+  ],
+  "title": "AgentNotification",
+  "type": "object"
+}

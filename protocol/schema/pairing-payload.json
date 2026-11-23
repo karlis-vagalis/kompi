@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Independent pairing credential v1; deliberately not changed with wire major.",
+  "properties": {
+    "endpointTicket": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "type": "string"
+    },
+    "name": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "secret": {
+      "maxLength": 256,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "v": {
+      "format": "uint8",
+      "maximum": 1,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "v",
+    "endpointTicket",
+    "secret",
+    "name"
+  ],
+  "title": "PairingPayload",
+  "type": "object"
+}

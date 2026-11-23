@@ -1,0 +1,23 @@
+{
+  "name": "kompi-pi-worker",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "overrides": { "undici": "8.12.2", "minimatch": "11.0.1" },
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "rm -rf dist-worker && tsc -p tsconfig.worker.json",
+    "worker": "bun dist-worker/daemon/src/worker.js"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "typebox": "^1.4.7",
+    "zod": "4.6.7"
+  }
+}

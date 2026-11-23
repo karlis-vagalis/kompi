@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": "..",
+    "outDir": "dist-worker",
+    "rewriteRelativeImportExtensions": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "types": ["node"]
+  },
+  "include": [
+    "src/worker.ts",
+    "src/conversations/domain.ts",
+    "src/conversations/rpc-session-factory.ts",
+    "src/conversations/attachment-order.ts",
+    "src/conversations/follow-up-boundary.ts",
+    "src/conversations/transcript-owner.ts",
+    "src/conversations/android-tools.ts",
+    "src/conversations/android-phone-action-schema.ts",
+    "../pi-extension/src/protocol/generated.ts"
+  ]
+}

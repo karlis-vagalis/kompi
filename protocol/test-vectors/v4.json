@@ -1,0 +1,53 @@
+{
+  "version": 4,
+  "valid": [
+    {
+      "name": "ping",
+      "message": {
+        "v": 4,
+        "id": "example",
+        "message": {
+          "type": "ping",
+          "payload": {}
+        }
+      },
+      "payloadHex": "a3626964676578616d706c65676d657373616765a2677061796c6f6164a064747970656470696e67617604",
+      "frameHex": "0000002ba3626964676578616d706c65676d657373616765a2677061796c6f6164a064747970656470696e67617604"
+    },
+    {
+      "name": "pong",
+      "message": {
+        "v": 4,
+        "id": "example",
+        "message": {
+          "type": "pong",
+          "payload": {}
+        }
+      },
+      "payloadHex": "a3626964676578616d706c65676d657373616765a2677061796c6f6164a0647479706564706f6e67617604",
+      "frameHex": "0000002ba3626964676578616d706c65676d657373616765a2677061796c6f6164a0647479706564706f6e67617604"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "empty",
+      "payloadHex": ""
+    },
+    {
+      "name": "indefinite",
+      "payloadHex": "bfff"
+    },
+    {
+      "name": "duplicate-key",
+      "payloadHex": "a2617604617604"
+    },
+    {
+      "name": "invalid-utf8",
+      "payloadHex": "a161ff01"
+    },
+    {
+      "name": "trailing",
+      "payloadHex": "a3626964676578616d706c65676d657373616765a2677061796c6f6164a064747970656470696e6761760400"
+    }
+  ]
+}

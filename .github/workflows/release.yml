@@ -1,0 +1,79 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require protected version tag on reviewed main history
+        env:
+          PROTECTED: ${{ github.ref_protected }}
+          CLEARED: ${{ vars.RELEASE_REDISTRIBUTION_APPROVED }}
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$PROTECTED" == true && "$CLEARED" == true ]]
+          git merge-base --is-ancestor HEAD origin/main
+  build:
+    needs: authorize
+    uses: ./.github/workflows/ci.yml
+    with:
+      package: true
+  sign:
+    needs: build
+    environment: android-signing
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: unsigned-apk
+      - name: Sign and verify certificate
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          CERT: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          umask 077
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$KEYSTORE" | base64 -d > "$key"
+          signer="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          "$signer" sign --ks "$key" --ks-key-alias "$KEY_ALIAS" --ks-pass env:STORE_PASS --key-pass env:KEY_PASS --out kompi.apk app-release-unsigned.apk
+          "$signer" verify --verbose --print-certs kompi.apk > cert.txt
+          grep -Fx "Signer #1 certificate SHA-256 digest: $CERT" cert.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-apk
+          path: kompi.apk
+          if-no-files-found: error
+  publish:
+    needs: sign
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: signed-apk
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: daemon
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          assets=(kompi.apk kompi-linux-x86_64.tar.gz rust-dependency-sources.tar.gz)
+          sha256sum "${assets[@]}" > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes "${assets[@]}" SHA256SUMS
+          gh release edit "$GITHUB_REF_NAME" --draft=false

@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "ConversationId": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "PushRegistrationId": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "RequestId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Version three contains no user or assistant content.",
+  "properties": {
+    "conversationId": {
+      "$ref": "#/$defs/ConversationId"
+    },
+    "expiresAtMs": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "hostEndpoint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "issuedAtMs": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "notificationId": {
+      "$ref": "#/$defs/RequestId"
+    },
+    "registrationId": {
+      "$ref": "#/$defs/PushRegistrationId"
+    },
+    "version": {
+      "format": "uint8",
+      "maximum": 3,
+      "minimum": 3,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "hostEndpoint",
+    "registrationId",
+    "notificationId",
+    "issuedAtMs",
+    "expiresAtMs",
+    "conversationId"
+  ],
+  "title": "ReplyPushNotificationPayload",
+  "type": "object"
+}

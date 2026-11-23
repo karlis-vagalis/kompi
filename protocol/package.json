@@ -1,0 +1,10 @@
+{
+  "name": "@kompi/protocol-codegen",
+  "private": true,
+  "scripts": {
+    "generate:schemas": "cd .. && cargo run -p kompi-protocol --example export-schemas",
+    "generate:clients": "node ./generate-clients.mjs",
+    "generate": "bun run generate:schemas && bun run generate:clients"
+  },
+  "type": "module"
+}
