@@ -56,6 +56,10 @@ def main():
     tag = 'v' + tomllib.loads((ROOT / 'rust/kompi-daemon/Cargo.toml').read_text())['package']['version']
     output = ROOT / 'target/distrib'
     output.mkdir(parents=True, exist_ok=True)
+    # cargo-dist does not replace static asset directories on a repeat build.
+    staging = output / f'kompi-daemon-{host}'
+    if staging.exists():
+        shutil.rmtree(staging)
     manifest = output / 'native-dist-manifest.json'
     manifest.unlink(missing_ok=True)
     built = run('dist', 'build', '--artifacts=local', '--target', host, '--tag', tag, '--output-format=json',
