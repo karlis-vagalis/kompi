@@ -29,8 +29,6 @@ Gradle versions are pinned in [`app/build.gradle.kts`](app/build.gradle.kts). Th
 | `com.google.mediapipe:tasks-audio` | 1.2.0 | The Apache Software License, Version 2.0 |
 | `com.google.zxing:core` | 3.5.4 | Apache License, Version 2.0 |
 | `com.google.protobuf:protobuf-java` | 4.33.6 | BSD-3-Clause |
-| `com.microsoft.onnxruntime:onnxruntime-android` | 1.32.0 | MIT License |
-| `computer.iroh:iroh-android` | 1.2.0 | MIT, Apache-2.0 |
 | `junit:junit` | 4.13.2 | EPL-1.0 |
 | `net.java.dev.jna:jna` | 5.19.1 | LGPL-2.1-or-later, Apache-2.0 |
 | `org.commonmark:commonmark` | 0.32.0 | BSD-2-Clause |
@@ -51,9 +49,9 @@ Gradle versions are pinned in [`app/build.gradle.kts`](app/build.gradle.kts). Th
 
 ## Notices in the APK
 
-[`assets/licenses/runtime-index.tsv`](app/src/main/assets/licenses/runtime-index.tsv) maps notices found in resolved release AARs and JARs (including nested JARs) to their packaged copies. Identical texts are stored once. Some artifacts do not contain a notice file; absence from this index is not a license grant. Use `./gradlew :app:dependencies --configuration releaseRuntimeClasspath` to inspect the full dependency graph.
+[`assets/licenses/runtime-index.tsv`](app/src/main/assets/licenses/runtime-index.tsv) maps notices found in resolved release AARs and JARs (including nested JARs) to their packaged copies. Identical texts are stored once. For artifacts without embedded notices, `jvm-source-notices.txt` preserves distinct license headers and notices from the matching published source JARs, with their download URLs. Additional upstream license texts cover Ripple Indication, Checker Framework annotations and Kotlin coroutines. The empty Guava `listenablefuture` conflict-avoidance artifact contains no classes. Use `./gradlew :app:dependencies --configuration releaseRuntimeClasspath` to inspect the full dependency graph.
 
 - MediaPipe Tasks Audio and Tasks Core 1.2.0 contain the same `META-INF/NOTICE`. The APK preserves it as `licenses/mediapipe-NOTICE`.
-- ONNX Runtime's license and third-party notices come from the [official 1.32.0 NuGet distribution](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.32.0), which also ships an Android AAR. The 1DS license is from the Maven AAR's classes.jar. The two AARs are not byte-identical.
-- Additional asset notices cover Compose Unstyled, Compose Icons and the underlying Lucide/Feather artwork, protobuf, and iroh-ffi. The iroh-ffi license covers the bindings, not every crate linked into its native libraries. The [upstream 1.2.0 source and Cargo.lock](https://github.com/n0-computer/iroh-ffi/tree/66a8d619a4d791d458d582f312df6e0ab42bc541) are separate from the host workspace.
+- The ONNX Runtime Android AAR, license and third-party notices all come from [Microsoft.ML.OnnxRuntime 1.32.0](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.32.0). [The preparation script](../scripts/prepare-android.sh) verifies both package and AAR SHA-256 values. The NuGet manifest identifies source commit [fab30a46491a40f5e4c968b80e8a59acbbb91b53](https://github.com/raymondxyang/onnxruntime/tree/fab30a46491a40f5e4c968b80e8a59acbbb91b53).
+- Additional notices cover Compose Unstyled, Compose Icons and the Lucide/Feather artwork, protobuf, and iroh-ffi. Kompi builds its Android iroh JNI libraries and Kotlin bindings [from source](../third-party/iroh-ffi/KOMPI.md); neither the upstream Android binary nor the desktop binaries from its JVM package are included. `assets/licenses/iroh-dependencies.zip` contains a package index and notices from the locked Cargo sources.
 

@@ -100,7 +100,7 @@ com.google.firebase:firebase-encoders-json:18.0.0	third_party_licenses.json	runt
 com.google.firebase:firebase-encoders-json:18.0.0	third_party_licenses.txt	runtime/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.txt
 com.google.mediapipe:tasks-audio:1.2.0	META-INF/NOTICE	mediapipe-NOTICE
 com.google.mediapipe:tasks-core:1.2.0	META-INF/NOTICE	mediapipe-NOTICE
-com.microsoft.onnxruntime:onnxruntime-android:1.32.0	classes.jar!/META-INF/LICENSE-1DS	needle.txt
+Microsoft.ML.OnnxRuntime:1.32.0	runtimes/android/native/onnxruntime.aar!/classes.jar!/META-INF/LICENSE-1DS	onnxruntime-LICENSE-1DS
 jakarta.inject:jakarta.inject-api:2.0.1	META-INF/LICENSE.txt	needle.txt
 jakarta.inject:jakarta.inject-api:2.0.1	META-INF/NOTICE.md	runtime/992ed62dd3ee17d73ce6a4a5e02dd0fed9eb326bf386aa5304e6a512214df540.txt
 net.java.dev.jna:jna:5.19.1	classes.jar!/META-INF/LICENSE	runtime/07c938b23950ab7d47a24ef35f9f5da3a05ae164278dc959ad6994135ed59ff1.txt

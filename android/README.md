@@ -5,6 +5,9 @@ On x86-64 Linux, install a JDK compatible with Gradle 9.8 (tested with JDK 27), 
 From this directory:
 
 ```sh
+rustup target add aarch64-linux-android x86_64-linux-android
+cargo install cargo-ndk --locked --version 3.5.4
+../scripts/prepare-android.sh
 app/src/main/cpp/whistle/fetch-native.sh
 ./gradlew :app:assembleDebug
 ```

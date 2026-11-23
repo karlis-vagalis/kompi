@@ -1,5 +1,7 @@
 # Dependency and build output
 /target/
+/third-party/iroh-ffi/target/
+/android/.native-build/
 node_modules/
 dist/
 /daemon/dist-worker/
