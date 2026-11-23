@@ -14,8 +14,8 @@ android {
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
         buildConfigField("boolean", "PI_FRAME_COALESCING", providers.gradleProperty("piFrameCoalescing").orElse("false").map { it.toBooleanStrict().toString() }.get())
         buildConfigField("boolean", "PI_EAGER_FIRST_PARSE", providers.gradleProperty("piEagerFirstParse").orElse("true").map { it.toBooleanStrict().toString() }.get())
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
