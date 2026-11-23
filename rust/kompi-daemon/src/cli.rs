@@ -20,6 +20,8 @@ pub struct Args {
 #[derive(Debug, Subcommand)]
 pub enum CommandKind {
     Serve {},
+    /// Install the bundled runtime beside this executable and print its worker directory.
+    SetupWorker {},
     Status {
         #[arg(long)]
         json: bool,
@@ -107,6 +109,10 @@ pub async fn run() -> Result<()> {
     let args = Args::parse();
     let state_dir = resolve_state_dir(args.state_dir)?;
     match args.command {
+        CommandKind::SetupWorker {} => {
+            println!("{}", crate::package_worker::setup()?.display());
+            Ok(())
+        }
         CommandKind::Serve {} => crate::transport::run_daemon(state_dir).await,
         CommandKind::Status { json } => {
             ensure_running(&state_dir).await?;

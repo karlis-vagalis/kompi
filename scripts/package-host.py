@@ -1,12 +1,15 @@
 """Build and smoke-test a native cargo-dist archive. No publishing or signing."""
 import argparse
+from functools import partial
 import hashlib
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from threading import Thread
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +43,15 @@ def main():
     for file in ('package.json', 'bun.lock'):
         shutil.copyfile(daemon / file, worker / file)
     run('cargo', 'metadata', '--locked', '--format-version=1', stdout=subprocess.DEVNULL)
-    run('dist', 'build', '--artifacts=local', '--target', host)
+    tag = 'v' + tomllib.loads((ROOT / 'rust/kompi-daemon/Cargo.toml').read_text())['package']['version']
+    output = ROOT / 'target/distrib'
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = output / 'native-dist-manifest.json'
+    manifest.unlink(missing_ok=True)
+    built = run('dist', 'build', '--artifacts=local', '--target', host, '--tag', tag, '--output-format=json',
+                stdout=subprocess.PIPE, env={**os.environ, 'KOMPI_PACKAGE_INPUTS': str(INPUT.resolve())})
+    manifest.write_bytes(built.stdout)
+    run('dist', 'build', '--artifacts=global', '--tag', tag)
     suffix = '.zip' if os.name == 'nt' else '.tar.gz'
     archive = ROOT / 'target/distrib' / f'kompi-daemon-{host}{suffix}'
     with archive.open('rb') as src:
@@ -57,17 +68,55 @@ def main():
         version = run(exe, '--version', cwd=package, capture_output=True, text=True).stdout.strip()
         if os.environ.get('GITHUB_REF_TYPE') == 'tag' and 'v' + version.split()[-1] != os.environ['GITHUB_REF_NAME']:
             raise RuntimeError(f'tag does not match packaged {version}')
-        run('bun', 'install', '--production', '--frozen-lockfile', cwd=package / 'worker')
-        # A real round trip without opening a Pi session or using model credentials.
-        request_id = '6031d25f-0da2-43dd-9d2c-152d66b4438a'
-        conversation = '0bba8946-46a5-48e0-9ba5-28dd3c15620f'
-        request = {'v': 4, 'id': request_id, 'message': {'type': 'snapshot', 'payload': {'conversationId': conversation}}}
-        response = run('bun', 'run', 'worker', cwd=package / 'worker', text=True,
-                       input=json.dumps(request) + '\n', stdout=subprocess.PIPE, timeout=30)
-        reply = json.loads(response.stdout)
-        if (reply['id'], reply['message']['type'], reply['message']['payload']['code']) != (request_id, 'error', 'session-not-found'):
-            raise RuntimeError('packaged worker did not answer the snapshot request')
+        smoke_worker(package / 'worker')
+    with tempfile.TemporaryDirectory() as temp:
+        smoke_installer(Path(temp), archive, tag)
     print(f'Verified {archive}: {digest}')
+
+
+def smoke_installer(fixture, archive, tag):
+    windows = os.name == 'nt'
+    installer = archive.parent / ('kompi-daemon-installer.ps1' if windows else 'kompi-daemon-installer.sh')
+    if f'https://github.com/karlis-vagalis/kompi/releases/download/{tag}' not in installer.read_text():
+        raise RuntimeError('installer does not target the expected release')
+    assets = fixture / 'release'
+    assets.mkdir()
+    shutil.copyfile(archive, assets / archive.name)
+    prefix = fixture / 'installed'
+    cmd = ['pwsh', '-NoProfile', '-File'] if windows else ['sh']
+    env = {k: v for k, v in os.environ.items() if k not in ('GITHUB_PATH', 'KOMPI_DAEMON_INSTALL_DIR', 'CARGO_DIST_FORCE_INSTALL_DIR')}
+    with ThreadingHTTPServer(('127.0.0.1', 0), partial(SimpleHTTPRequestHandler, directory=assets)) as server:
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            env.update(KOMPI_DAEMON_UNMANAGED_INSTALL=str(prefix), KOMPI_DAEMON_DOWNLOAD_URL=f'http://127.0.0.1:{server.server_port}')
+            for _ in range(2):
+                run(*cmd, installer, cwd=fixture, env=env, timeout=120)
+                exe = prefix / ('kompi.exe' if windows else 'kompi')
+                run(exe, '--version', cwd=fixture)
+                worker = Path(run(exe, 'setup-worker', cwd=fixture, stdout=subprocess.PIPE, text=True).stdout.strip())
+                if not worker.is_absolute() or not worker.resolve().is_relative_to(prefix.resolve()):
+                    raise RuntimeError('setup-worker did not provision the installed runtime')
+                for source, installed in [(ROOT / 'LICENSE', worker.parent / 'LICENSE'), (INPUT / 'notices.tar.gz', worker.parent / 'notices.tar.gz')]:
+                    if installed.read_bytes() != source.read_bytes():
+                        raise RuntimeError(f'installed {installed.name} does not match the package input')
+                smoke_worker(worker)
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+def smoke_worker(worker):
+    run('bun', 'install', '--production', '--frozen-lockfile', cwd=worker)
+    # A real round trip without opening a Pi session or using model credentials.
+    request_id = '6031d25f-0da2-43dd-9d2c-152d66b4438a'
+    conversation = '0bba8946-46a5-48e0-9ba5-28dd3c15620f'
+    request = {'v': 4, 'id': request_id, 'message': {'type': 'snapshot', 'payload': {'conversationId': conversation}}}
+    response = run('bun', 'run', 'worker', cwd=worker, text=True,
+                   input=json.dumps(request) + '\n', stdout=subprocess.PIPE, timeout=30)
+    reply = json.loads(response.stdout)
+    if (reply['id'], reply['message']['type'], reply['message']['payload']['code']) != (request_id, 'error', 'session-not-found'):
+        raise RuntimeError('packaged worker did not answer the snapshot request')
 
 
 if __name__ == '__main__':

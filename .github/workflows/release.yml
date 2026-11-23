@@ -83,6 +83,6 @@ jobs:
           for host in "${hosts[@]}"; do
             [[ "$(sha256sum "$host" | cut -d' ' -f1)" == "$(awk 'NR==1 {print $1}' "$host.sha256")" ]]
           done
-          assets=(kompi.apk "${hosts[@]}" rust-dependency-sources.tar.gz)
+          assets=(kompi.apk kompi-daemon-installer.sh kompi-daemon-installer.ps1 "${hosts[@]}" rust-dependency-sources.tar.gz)
           sha256sum "${assets[@]}" > SHA256SUMS
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" SHA256SUMS --clobber

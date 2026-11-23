@@ -62,11 +62,13 @@ jobs:
         include:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            installer: sh
             archive: tar.gz
             tool: tar.xz
             digest: 7fee44ff3ff71ed0064b32d4ec62fee6b58bd37c5887b12a86aedddc5af0c7b5
           - runner: windows-2022
             target: x86_64-pc-windows-msvc
+            installer: ps1
             archive: zip
             tool: zip
             digest: 7bb53fbc998321f77a3bbb044084a52747c8ed041cf6d6a604802aa57b9c80c6
@@ -123,6 +125,7 @@ jobs:
           path: |
             target/distrib/kompi-daemon-${{ matrix.target }}.${{ matrix.archive }}
             target/distrib/kompi-daemon-${{ matrix.target }}.${{ matrix.archive }}.sha256
+            target/distrib/kompi-daemon-installer.${{ matrix.installer }}
           if-no-files-found: error
   android:
     runs-on: ubuntu-24.04

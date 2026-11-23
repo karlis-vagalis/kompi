@@ -1,5 +1,6 @@
 mod chat_timing;
 pub mod cli;
+mod package_worker;
 pub mod local_ipc;
 pub mod lifecycle;
 pub mod registry;

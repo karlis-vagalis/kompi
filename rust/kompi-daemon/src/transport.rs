@@ -3301,7 +3301,7 @@ impl WorkerHost {
                 }
                 path
             }
-            None => std::env::current_exe()?.parent().context("cannot locate installed executable")?.join("worker"),
+            None => crate::package_worker::default_dir()?,
         };
         let worker_dir=fs::canonicalize(&worker_dir).with_context(||format!("resolve Pi SDK worker package {}; set KOMPI_SDK_WORKER_DIR to its absolute package directory",worker_dir.display()))?;
         let package_path = worker_dir.join("package.json");
