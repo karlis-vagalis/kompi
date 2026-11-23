@@ -18,10 +18,10 @@ jobs:
       - name: Require protected version tag on reviewed main history
         env:
           PROTECTED: ${{ github.ref_protected }}
-          CLEARED: ${{ vars.RELEASE_REDISTRIBUTION_APPROVED }}
+          REVIEWED_COMMIT: ${{ vars.RELEASE_REVIEWED_COMMIT }}
         run: |
           [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          [[ "$PROTECTED" == true && "$CLEARED" == true ]]
+          [[ "$PROTECTED" == true && "$REVIEWED_COMMIT" == "$(git rev-parse HEAD)" ]]
           git merge-base --is-ancestor HEAD origin/main
   build:
     needs: authorize
@@ -44,11 +44,14 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           CERT: ${{ vars.ANDROID_CERT_SHA256 }}
         run: |
+          [[ "$CERT" =~ ^[0-9a-f]{64}$ ]]
           umask 077
           key=$(mktemp)
           trap 'rm -f "$key"' EXIT
           printf '%s' "$KEYSTORE" | base64 -d > "$key"
           signer="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          version=$("${signer%/*}/aapt" dump badging app-release-unsigned.apk | awk -F "'" '/^package: / {print $6}')
+          [[ "v$version" == "$GITHUB_REF_NAME" ]]
           "$signer" sign --ks "$key" --ks-key-alias "$KEY_ALIAS" --ks-pass env:STORE_PASS --key-pass env:KEY_PASS --out kompi.apk app-release-unsigned.apk
           "$signer" verify --verbose --print-certs kompi.apk > cert.txt
           grep -Fx "Signer #1 certificate SHA-256 digest: $CERT" cert.txt

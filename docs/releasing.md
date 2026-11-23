@@ -1,22 +1,23 @@
 # Releases
 
-Source publication and binary distribution are separate decisions. **Binary releases are disabled by default.** Before enabling them, resolve redistribution rights for every packaged dependency (including Android native libraries and transitive Rust dependencies), include all required notices and corresponding source, and review the exact release diff. The host audit also found outstanding RustSec advisories: see [host dependency review](../daemon/DEPENDENCIES.md). Keep the gate closed until these findings have been triaged and mitigated. Do not set `RELEASE_REDISTRIBUTION_APPROVED=true` until both the security and redistribution reviews are complete. Clear the variable when dependencies or terms change.
+Kompi distributes its signed Android APK and Linux x86-64 daemon through GitHub Releases. Android updates require the same application ID and signing identity, and a higher `versionCode`.
 
-## Configure GitHub before tagging
+## One-time configuration
 
-- Protect `main` with required CI and review. Set an active tag ruleset for `v*`: restrict creation to release maintainers and prohibit updates and deletion. Protect workflow files with mandatory review. Never sign a tag targeting unreviewed code.
-- Create the `android-signing` environment. Restrict deployments to `v*` tags, require a reviewer other than the initiator and disable administrator bypass. If these protections aren't available, do not store the production key there.
-- Back up the Android release keystore offline. Add environment **secrets** `ANDROID_KEYSTORE_BASE64` (base64 of the complete keystore), `ANDROID_KEY_ALIAS`, `ANDROID_STORE_PASSWORD`, `ANDROID_KEY_PASSWORD`. Base64 is not encryption. Never add the keystore to Git or paste it into workflow logs. Put the expected public signing certificate SHA-256 fingerprint (64 lowercase hex characters, no separators) in the environment **variable** `ANDROID_CERT_SHA256`. Keep the same signing identity for app updates.
-- Grant the workflow permission to create releases. Only the final job requests `contents: write`; the signing job has no checkout and neither the Gradle nor the Rust/JS builds receive credentials.
+- Protect `main` with required reviews and CI checks. Use active rulesets for `v*` tags: restrict creation to release maintainers, and block updates and deletion even for those maintainers.
+- Restrict the `android-signing` environment to `v*` tags. Require an independent reviewer, prevent self-review and disable administrator bypass.
+- Generate a dedicated release keystore offline. Keep encrypted offline backups of the key and its recovery credentials, and verify recovery before the first release. Never use a debug key, commit a keystore or paste its contents into logs.
+- Set the environment secrets `ANDROID_KEYSTORE_BASE64` (base64 of the entire keystore), `ANDROID_KEY_ALIAS`, `ANDROID_STORE_PASSWORD` and `ANDROID_KEY_PASSWORD`. Base64 is not encryption. Set environment variable `ANDROID_CERT_SHA256` to the public signing certificate’s lowercase SHA-256 digest (64 hex characters, no separators). Share that fingerprint with users through a separately trusted channel.
 
 ## Cut a release
 
-1. Update the Android `versionName` and monotonically increasing `versionCode`, crate versions and lockfiles on a reviewed main commit. Verify the merged commit passed CI and matches the intended `vMAJOR.MINOR.PATCH` tag. Check licenses and notices, then set repository variable `RELEASE_REDISTRIBUTION_APPROVED` to `true`.
-2. Push the protected version tag on that commit. The release workflow checks ancestry, reruns tests, builds the unsigned APK and builds the Linux x86-64 daemon on Ubuntu 24.04. Check the workflow revision, tag and build logs before approving signing.
-3. The signing job verifies the APK signature and certificate fingerprint. The publishing job attaches `kompi.apk`, `kompi-linux-x86_64.tar.gz`, `rust-dependency-sources.tar.gz` (locked crate sources) and `SHA256SUMS` to a draft, then publishes it. It won't replace an existing release. If interrupted, inspect the draft and its files before manually finishing or discarding it; never move or reuse a published tag.
+1. Set the Android `versionName` to `MAJOR.MINOR.PATCH`, increment `versionCode`, and update crate versions and lockfiles. Merge to `main` and confirm CI passes.
+2. Review the exact commit, including workflows, dependencies, security advisories, redistribution rights, notices and corresponding sources for both packages. Set repository Actions variable `RELEASE_REVIEWED_COMMIT` to the full approved commit SHA. An approval does not carry over to later commits.
+3. Create and push `vMAJOR.MINOR.PATCH` at that SHA. The workflow checks tag protection and main ancestry, then runs CI and packages the APK and daemon. Review the tag, workflow and build before approving the signing deployment.
+4. The signing job checks the APK version and verifies its signature and certificate. The publish job attaches `kompi.apk`, `kompi-linux-x86_64.tar.gz`, `rust-dependency-sources.tar.gz` and `SHA256SUMS` to a draft and publishes it. If interrupted, inspect any existing draft and verify its assets before finishing or discarding it. Never move a release tag.
 
-## Verify and unpack
+## Verify and install
 
-Download the assets into one directory, run `sha256sum -c SHA256SUMS`, then `apksigner verify --verbose --print-certs kompi.apk` and compare the certificate fingerprint with a separately trusted copy. Checksums detect damaged downloads; they are not independent signatures on the Linux build.
+Download all assets into one directory and run `sha256sum -c SHA256SUMS`. Verify the APK with `apksigner verify --verbose --print-certs kompi.apk` and compare its fingerprint with your trusted copy before sideloading. Checksums detect damaged downloads; they are not independent signatures on the daemon.
 
-On a compatible Linux x86-64 system, unpack the archive with `tar -xzf kompi-linux-x86_64.tar.gz`. Keep `kompi` and its sibling `worker/` together. Install Bun and Pi as described in the setup guide, then run `(cd kompi-linux-x86_64/worker && bun install --production --frozen-lockfile)` before starting the daemon. The archive includes compiled worker code and its locked dependency manifest, not Bun, Pi, or `node_modules`.
+Unpack the daemon with `tar -xzf kompi-linux-x86_64.tar.gz`. Keep `kompi` and its sibling `worker/` together. Install Bun and Pi as described in the [setup guide](../README.md), then run `(cd kompi-linux-x86_64/worker && bun install --production --frozen-lockfile)`. The archive includes compiled worker code and its locked manifest, not Bun, Pi or `node_modules`.
