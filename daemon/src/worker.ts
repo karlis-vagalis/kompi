@@ -392,7 +392,7 @@ async function handleRequest(envelope: ReturnType<typeof parseWorkerRequest>): P
       pendingAndroidTools.delete(payload.requestId);
       pending.reply(`${JSON.stringify({ requestId: payload.requestId, response: {
         success: payload.success,
-        ...(payload.resultJson ? { resultJson: payload.resultJson } : {}),
+        ...(payload.resultJson != null ? { resultJson: payload.resultJson } : {}),
         ...(!payload.success ? { errorCode: payload.errorCode, errorMessage: payload.errorMessage } : {}),
       } })}\n`);
       return;

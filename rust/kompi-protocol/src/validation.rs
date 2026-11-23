@@ -16,7 +16,7 @@ fn validate_from_schema<T: Serialize + JsonSchema>(
         .get_or_init(|| {
             let schema =
                 serde_json::to_value(schemars::schema_for!(T)).map_err(|e| e.to_string())?;
-            jsonschema::validator_for(&schema).map_err(|e| e.to_string())
+            jsonschema::options().with_format("android-tool-result", |s: &str| s.len() <= ANDROID_TOOL_RESULT_MAX_BYTES).should_validate_formats(true).build(&schema).map_err(|e| e.to_string())
         })
         .as_ref()
         .map_err(|_| ProtocolError::Invalid("protocol schema"))?;
@@ -55,10 +55,9 @@ impl ValidateProtocol for Message {
         }
     }
     fn validate(&self) -> Result<(), ProtocolError> {
-        if let Message::AttachmentChunk { data, .. } | Message::ArtifactData { data } = self {
-            if data.as_bytes().is_empty() || data.as_bytes().len() > ATTACHMENT_CHUNK_MAX_BYTES {
-                return Err(ProtocolError::Invalid("attachment chunk data length"));
-            }
+        // Chunk size is proven by AttachmentChunkData. Avoid base64-encoding
+        // binary transfers just to recheck that invariant in the JSON schema.
+        if matches!(self, Message::AttachmentChunk { .. } | Message::ArtifactData { .. }) {
             return Ok(());
         }
         static VALIDATOR: OnceLock<Result<Validator, String>> = OnceLock::new();
@@ -68,38 +67,22 @@ impl ValidateProtocol for Message {
                 return Err(ProtocolError::Invalid("artifact file name"));
             }
         }
-        if let Message::Prompt { text, attachments, .. } | Message::TimedPrompt { text, attachments, .. } | Message::ConversationPrompt { text, attachments, .. } = self {
-            if text.trim().is_empty() && attachments.as_ref().is_none_or(Vec::is_empty) {
-                return Err(ProtocolError::Invalid("prompt requires text or attachments"));
-            }
-        }
         if let Message::AndroidToolRequest { tool, action_json, .. } = self {
             validate_android_tool(*tool, action_json.as_deref())?;
-        }
-        if let Message::AndroidToolResponse { success, result_json, error_code, error_message, .. } = self {
-            let shape = if *success { result_json.is_some() && error_code.is_none() && error_message.is_none() }
-                else { error_code.as_ref().is_some_and(|code| !code.is_empty()) && error_message.is_some() };
-            if !shape { return Err(ProtocolError::Invalid("android tool response shape")); }
         }
         Ok(())
     }
 }
 impl_schema_validation!(ControlMessage);
 impl ValidateProtocol for WorkerRequest {
+    fn normalize(&mut self) {
+        if let Self::Prompt { text, .. } | Self::FollowUpAdd { text, .. } = self {
+            *text = text.trim().to_owned();
+        }
+    }
     fn validate(&self) -> Result<(), ProtocolError> {
         static VALIDATOR: OnceLock<Result<Validator, String>> = OnceLock::new();
-        validate_from_schema(self, &VALIDATOR)?;
-        if let WorkerRequest::Prompt { text, attachments, .. } | WorkerRequest::FollowUpAdd { text, attachments, .. } = self {
-            if text.trim().is_empty() && attachments.as_ref().is_none_or(Vec::is_empty) {
-                return Err(ProtocolError::Invalid("worker prompt requires text or attachments"));
-            }
-        }
-        if let WorkerRequest::AndroidToolResponse { success, result_json, error_code, error_message, .. } = self {
-            let shape = if *success { result_json.is_some() && error_code.is_none() && error_message.is_none() }
-                else { error_code.as_ref().is_some_and(|code| !code.is_empty()) && error_message.is_some() };
-            if !shape { return Err(ProtocolError::Invalid("worker android tool response shape")); }
-        }
-        Ok(())
+        validate_from_schema(self, &VALIDATOR)
     }
 }
 impl ValidateProtocol for WorkerEvent {

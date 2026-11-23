@@ -1,3 +1,4 @@
+import { alternatives } from './payload-alternatives.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -10,16 +11,16 @@ await mkdir(tsDir,{recursive:true});
 function run(args){const r=spawnSync(args[0],args.slice(1),{cwd:here,encoding:'utf8'});if(r.status!==0)throw new Error(`${args.join(' ')} failed: ${r.stderr||r.stdout}`);}
 function schemaToZod(schema, defs, seen=new Set()) {
   if(schema.$ref){const key=schema.$ref.split('/').at(-1);if(seen.has(key))return 'z.lazy(() => '+key+'Schema)';return schemaToZod(defs[key],defs,new Set([...seen,key]));}
-  if(schema.oneOf||schema.anyOf){const options=schema.oneOf||schema.anyOf;return `z.union([${options.map(x=>schemaToZod(x,defs,seen)).join(', ')}])`;}
+  if(schema.oneOf||(schema.anyOf&&!schema.properties)){const options=schema.oneOf||schema.anyOf;return `z.union([${options.map(x=>schemaToZod(x,defs,seen)).join(', ')}])`;}
   if(schema.allOf)return schema.allOf.map(x=>schemaToZod(x,defs,seen)).join('.and(')+')'.repeat(schema.allOf.length-1);
   if(schema.enum){const vals=schema.enum;return vals.every(x=>typeof x==='string')?`z.enum(${JSON.stringify(vals)})`:`z.union([${vals.map(x=>`z.literal(${JSON.stringify(x)})`).join(',')}])`;}
   const types=Array.isArray(schema.type)?schema.type.filter(x=>x!=='null'):null;
   const t=types?(types.length===1?types[0]:types):schema.type;
   if(Array.isArray(schema.type)&&schema.type.includes('null'))return `z.union([${schemaToZod({...schema,type:t},defs,seen)}, z.null()])`;
   let out;
-  if(t==='object'||schema.properties){const props=Object.entries(schema.properties||{}).map(([k,v])=>`${JSON.stringify(k)}: ${schemaToZod(v,defs,seen)}${(schema.required||[]).includes(k)?'':'.optional()'}`).join(', ');out=`z.object({${props}})${schema.additionalProperties===false?'.strict()':''}`;if(schema.properties?.text&&schema.properties?.attachments)out+='.refine(v => v.text.trim().length > 0 || (v.attachments?.length ?? 0) > 0, { message: "prompt requires text or attachments" })';}
+  if(t==='object'||schema.properties){const props=Object.entries(schema.properties||{}).map(([k,v])=>`${JSON.stringify(k)}: ${schemaToZod(v,defs,seen)}${(schema.required||[]).includes(k)?'':'.optional()'}`).join(', ');out=`z.object({${props}})${schema.additionalProperties===false?'.strict()':''}`;if(schema.anyOf)out+=`.refine(v => ${alternatives(schema.anyOf,'ts','v')}, { message: 'invalid payload alternative' })`;}
   else if(t==='array')out=`z.array(${schemaToZod(schema.items||{},defs,seen)})${schema.maxItems!==undefined?`.max(${schema.maxItems})`:''}${schema.minItems!==undefined?`.min(${schema.minItems})`:''}`;
-  else if(t==='string'){out='z.string()';if(schema.format==='byte')out+=' .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)';if(schema['x-kompi-transform']==='trim')out+='.trim()';if(schema.minLength!==undefined)out+=`.min(${schema.minLength})`;if(schema.maxLength!==undefined)out+=`.max(${schema.maxLength})`;if(schema.pattern)out+=`.regex(new RegExp(${JSON.stringify(schema.pattern)}))`;if(schema.format==='uuid')out+='.uuid()';if(schema.format==='date-time')out+='.datetime({offset:true})';}
+  else if(t==='string'){out='z.string()';if(schema.format==='byte')out+=' .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)';if(schema['x-kompi-transform']==='trim')out+='.overwrite(v => v.replace(/^\\p{White_Space}+|\\p{White_Space}+$/gu, ""))';if(schema.minLength!==undefined)out+=`.min(${schema.minLength})`;if(schema.maxLength!==undefined)out+=schema['x-kompi-transform']==='trim'?`.refine(v => [...v].length <= ${schema.maxLength})`:`.max(${schema.maxLength})`;if(schema.pattern)out+=`.regex(new RegExp(${JSON.stringify(schema.pattern)}))`;if(schema.format==='uuid')out+='.uuid()';if(schema.format==='android-tool-result')out+=`.refine(v => new TextEncoder().encode(v).length <= ${metadata.androidToolResultMaxBytes})`;if(schema.format==='date-time')out+='.datetime({offset:true})';}
   else if(t==='integer'||t==='number'){if(schema.minimum!==undefined&&schema.minimum===schema.maximum)out=`z.literal(${schema.minimum})`;else{out='z.number()'+(t==='integer'?'.int()':'');if(schema.minimum!==undefined)out+=`.gte(${schema.minimum})`;if(schema.maximum!==undefined)out+=`.lte(${schema.maximum})`;}}
   else if(t==='boolean')out='z.boolean()';else if(t==='null')out='z.null()';else out='z.unknown()';
   if(schema.const!==undefined)out=`z.literal(${JSON.stringify(schema.const)})`;

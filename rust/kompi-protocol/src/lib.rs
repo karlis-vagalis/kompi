@@ -271,9 +271,30 @@ impl AttachmentChunkData {
         Ok(Self(bytes.to_vec()))
     }
 }
+/// Cross-field constraints on the tagged payloads, shared by validators and client generation.
+fn semantic_alternatives(schema: &mut schemars::Schema) {
+    let variants = schema.as_object_mut().and_then(|o| o.get_mut("oneOf"))
+        .and_then(|v| v.as_array_mut()).expect("adjacently tagged message alternatives");
+    for variant in variants {
+        let properties = &mut variant["properties"];
+        let alternatives = match properties["type"]["const"].as_str() {
+            Some("prompt" | "timed-prompt" | "conversation-prompt" | "follow-up-add") => serde_json::json!([
+                {"required":["text"],"properties":{"text":{"type":"string","pattern":r"[^\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"}}},
+                {"required":["attachments"],"properties":{"attachments":{"type":"array","minItems":1}}}
+            ]),
+            Some("android-tool-response") => serde_json::json!([
+                {"required":["resultJson"],"properties":{"success":{"const":true},"resultJson":{"type":"string"},"errorCode":{"type":"null"},"errorMessage":{"type":"null"}}},
+                {"required":["errorCode","errorMessage"],"properties":{"success":{"const":false},"errorCode":{"type":"string","minLength":1},"errorMessage":{"type":"string"}}}
+            ]),
+            _ => continue,
+        };
+        properties["payload"]["anyOf"] = alternatives;
+    }
+}
+
 mod attachment_bytes {
     use base64::Engine;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserializer, Serialize, Serializer};
     pub fn serialize<S: Serializer>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error> {
         if serializer.is_human_readable() {
             serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
@@ -282,18 +303,32 @@ mod attachment_bytes {
         }
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-        if deserializer.is_human_readable() {
-            let value = String::deserialize(deserializer)?;
-            base64::engine::general_purpose::STANDARD.decode(value).map_err(serde::de::Error::custom)
-        } else {
-            Ok(serde_bytes::ByteBuf::deserialize(deserializer)?.into_vec())
+        // A tagged enum with payload before type replays buffered serde content
+        // as human-readable, even for CBOR. Accept bytes in either mode.
+        struct Bytes(bool);
+        impl<'de> serde::de::Visitor<'de> for Bytes {
+            type Value = Vec<u8>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { f.write_str("bounded attachment bytes") }
+            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Vec<u8>, E> {
+                super::AttachmentChunkData::from_slice(v).map(|chunk| chunk.0).map_err(E::custom)
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Vec<u8>, E> {
+                if !self.0 || value.is_empty() || value.len() > super::ATTACHMENT_CHUNK_MAX_BYTES.div_ceil(3) * 4 {
+                    return Err(E::custom("invalid encoded attachment length or representation"));
+                }
+                let bytes = base64::engine::general_purpose::STANDARD.decode(value).map_err(E::custom)?;
+                if bytes.len() > super::ATTACHMENT_CHUNK_MAX_BYTES { return Err(E::custom("attachment chunk length")); }
+                Ok(bytes)
+            }
         }
+        let visitor = Bytes(deserializer.is_human_readable());
+        deserializer.deserialize_any(visitor)
     }
 }
 impl JsonSchema for AttachmentChunkData {
     fn schema_name() -> std::borrow::Cow<'static, str> { "AttachmentChunkData".into() }
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({"type":"string","format":"byte","contentEncoding":"base64","maxLength":65536})
+        schemars::json_schema!({"type":"string","format":"byte","contentEncoding":"base64","minLength":4,"maxLength":ATTACHMENT_CHUNK_MAX_BYTES.div_ceil(3)*4})
     }
 }
 
@@ -653,6 +688,7 @@ impl<T> Envelope<T> {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[schemars(transform = semantic_alternatives)]
 pub enum Message {
     ModelsGet {},
     ModelsResult { catalog: ModelCatalog },
@@ -671,7 +707,7 @@ pub enum Message {
     PiConversationUiState { conversation_id: ConversationId, #[schemars(length(max = 1))] requests: Vec<PendingPiUiRequest> },
     PiUiResponse { conversation_id: ConversationId, interaction_id: UiInteractionId, answer: PiUiAnswer },
     AndroidToolRequest { conversation_id: ConversationId, request_id: RequestId, tool: AndroidToolKind, #[schemars(range(min = 1, max = ANDROID_TOOL_TIMEOUT_MS))] timeout_ms: u32, #[schemars(length(max = ANDROID_TOOL_ACTION_MAX_BYTES))] action_json: Option<String> },
-    AndroidToolResponse { conversation_id: ConversationId, request_id: RequestId, success: bool, #[schemars(length(max = ANDROID_TOOL_RESULT_MAX_BYTES))] result_json: Option<String>, #[schemars(length(max = 64))] error_code: Option<String>, #[schemars(length(max = 512))] error_message: Option<String> },
+    AndroidToolResponse { conversation_id: ConversationId, request_id: RequestId, success: bool, #[schemars(extend("format" = "android-tool-result"))] result_json: Option<String>, #[schemars(length(max = 64))] error_code: Option<String>, #[schemars(length(max = 512))] error_message: Option<String> },
     AndroidToolResolved { conversation_id: ConversationId, request_id: RequestId },
     DeviceNotificationRequest { request_id: RequestId, #[schemars(length(min = 1, max = DEVICE_NOTIFICATION_TITLE_MAX_CHARS))] title: String, #[schemars(length(min = 1, max = DEVICE_NOTIFICATION_BODY_MAX_CHARS))] body: String, #[schemars(range(min = 1, max = DEVICE_NOTIFICATION_TIMEOUT_MS))] timeout_ms: u32 },
     DeviceRichNotificationRequest { request_id: RequestId, notification: AgentNotification, #[schemars(range(min = 1, max = DEVICE_NOTIFICATION_TIMEOUT_MS))] timeout_ms: u32 },
@@ -881,18 +917,22 @@ impl Message {
         }
     }
 }
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize)]
-#[serde(transparent)]
-pub struct SyncCursor(String);
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct SyncCursor(i64);
 impl SyncCursor {
     pub fn parse(value: String) -> Result<Self, ProtocolError> {
-        let n = value.parse::<u64>().map_err(|_| ProtocolError::Invalid("sync cursor"))?;
-        if value.is_empty() || (value.len() > 1 && value.starts_with('0')) || n.to_string() != value {
+        let n = value.parse::<i64>().map_err(|_| ProtocolError::Invalid("sync cursor"))?;
+        if n < 0 || n.to_string() != value {
             return Err(ProtocolError::Invalid("sync cursor"));
         }
-        Ok(Self(value))
+        Ok(Self(n))
     }
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn as_i64(&self) -> i64 { self.0 }
+}
+impl Serialize for SyncCursor {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&self.0)
+    }
 }
 impl<'de> Deserialize<'de> for SyncCursor {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
@@ -902,7 +942,16 @@ impl<'de> Deserialize<'de> for SyncCursor {
 impl JsonSchema for SyncCursor {
     fn schema_name() -> std::borrow::Cow<'static, str> { "SyncCursor".into() }
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({"type":"string","pattern":"^(0|[1-9][0-9]{0,19})$","maxLength":20})
+        // At full width, the first digit differing from MAX must be smaller.
+        let max = i64::MAX.to_string();
+        let mut alternatives = vec!["0".to_owned(), "[1-9][0-9]{0,17}".to_owned(), max.clone()];
+        for (i, digit) in max.bytes().enumerate() {
+            let low = if i == 0 { b'1' } else { b'0' };
+            if digit > low {
+                alternatives.push(format!("{}[{}-{}][0-9]{{{}}}", &max[..i], low as char, (digit - 1) as char, max.len() - i - 1));
+            }
+        }
+        schemars::json_schema!({"type":"string","pattern":format!("^({})$", alternatives.join("|")),"maxLength":19})
     }
 }
 
@@ -1139,11 +1188,12 @@ pub mod worker {
         rename_all_fields = "camelCase",
         deny_unknown_fields
     )]
+    #[schemars(transform = semantic_alternatives)]
     pub enum WorkerRequest {
         ModelsGet {},
         Snapshot { conversation_id: ConversationId, #[serde(default, skip_serializing_if = "Option::is_none")] request_id: Option<RequestId> },
         UiResponse { conversation_id: ConversationId, interaction_id: UiInteractionId, answer: PiUiAnswer },
-        AndroidToolResponse { conversation_id: ConversationId, request_id: RequestId, success: bool, #[schemars(length(max = ANDROID_TOOL_RESULT_MAX_BYTES))] result_json: Option<String>, #[schemars(length(max = 64))] error_code: Option<String>, #[schemars(length(max = 512))] error_message: Option<String> },
+        AndroidToolResponse { conversation_id: ConversationId, request_id: RequestId, success: bool, #[schemars(extend("format" = "android-tool-result"))] result_json: Option<String>, #[schemars(length(max = 64))] error_code: Option<String>, #[schemars(length(max = 512))] error_message: Option<String> },
         Create {
             conversation_id: ConversationId,
             #[schemars(length(min = 1, max = 128))]

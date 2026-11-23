@@ -300,6 +300,45 @@
       "properties": {
         "payload": {
           "additionalProperties": false,
+          "anyOf": [
+            {
+              "properties": {
+                "errorCode": {
+                  "type": "null"
+                },
+                "errorMessage": {
+                  "type": "null"
+                },
+                "resultJson": {
+                  "type": "string"
+                },
+                "success": {
+                  "const": true
+                }
+              },
+              "required": [
+                "resultJson"
+              ]
+            },
+            {
+              "properties": {
+                "errorCode": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "errorMessage": {
+                  "type": "string"
+                },
+                "success": {
+                  "const": false
+                }
+              },
+              "required": [
+                "errorCode",
+                "errorMessage"
+              ]
+            }
+          ],
           "properties": {
             "conversationId": {
               "$ref": "#/$defs/ConversationId"
@@ -322,7 +361,7 @@
               "$ref": "#/$defs/RequestId"
             },
             "resultJson": {
-              "maxLength": 16384,
+              "format": "android-tool-result",
               "type": [
                 "string",
                 "null"
@@ -439,6 +478,30 @@
       "properties": {
         "payload": {
           "additionalProperties": false,
+          "anyOf": [
+            {
+              "properties": {
+                "text": {
+                  "pattern": "[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            },
+            {
+              "properties": {
+                "attachments": {
+                  "minItems": 1,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "attachments"
+              ]
+            }
+          ],
           "properties": {
             "attachments": {
               "items": {
@@ -493,6 +556,30 @@
       "properties": {
         "payload": {
           "additionalProperties": false,
+          "anyOf": [
+            {
+              "properties": {
+                "text": {
+                  "pattern": "[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ]
+            },
+            {
+              "properties": {
+                "attachments": {
+                  "minItems": 1,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "attachments"
+              ]
+            }
+          ],
           "properties": {
             "attachments": {
               "items": {

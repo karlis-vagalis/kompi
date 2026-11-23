@@ -111,7 +111,13 @@ impl<'a> CborGuard<'a> {
                     if key_major != 3 {
                         return Err(ProtocolError::Invalid("CBOR map key"));
                     }
-                    if !keys.insert(self.text(key_len)?) {
+                    let key = self.text(key_len)?;
+                    // Envelope.message.payload.data is a binary field. Check the
+                    // representation before serde can buffer a late enum tag.
+                    if depth == 2 && key == "data" && self.bytes.get(self.at).map(|b| b >> 5) != Some(2) {
+                        return Err(ProtocolError::Invalid("expected CBOR byte string"));
+                    }
+                    if !keys.insert(key) {
                         return Err(ProtocolError::Invalid("duplicate CBOR key"));
                     }
                     self.value(depth + 1)?;
