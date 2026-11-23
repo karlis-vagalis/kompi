@@ -1,7 +1,7 @@
 name: Release
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
 permissions:
   contents: read
 concurrency:
@@ -15,12 +15,15 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Require owner-published version tag on main history
+      - name: Require owner-created immutable version tag on main history
         env:
           OWNER: ${{ github.repository_owner }}
         run: |
           [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$GITHUB_ACTOR" == "$OWNER" ]]
+          [[ "$GITHUB_TRIGGERING_ACTOR" == "$OWNER" ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$(git rev-parse "$GITHUB_REF^{commit}")" == "$GITHUB_SHA" ]]
           git merge-base --is-ancestor HEAD origin/main
   build:
     needs: authorize
@@ -85,4 +88,46 @@ jobs:
           done
           assets=(kompi.apk kompi-daemon-installer.sh kompi-daemon-installer.ps1 "${hosts[@]}" rust-dependency-sources.tar.gz)
           sha256sum "${assets[@]}" > SHA256SUMS
-          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" SHA256SUMS --clobber
+          assets+=(SHA256SUMS)
+          releases="repos/$GH_REPO/releases"
+          tag=$GITHUB_REF_NAME
+          check_tag() {
+            local obj sha
+            obj=$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq .object)
+            if [[ $(jq -r .type <<< "$obj") == tag ]]; then
+              sha=$(jq -r .sha <<< "$obj")
+              obj=$(gh api "repos/$GH_REPO/git/tags/$sha" --jq .object)
+            fi
+            jq -e --arg sha "$GITHUB_SHA" '.type == "commit" and .sha == $sha' <<< "$obj" >/dev/null
+          }
+          check_tag
+          if [[ "$tag" == v0.1.0 ]]; then
+            id=455244515 # Initial pre-existing draft, not a public tag lookup.
+          else
+            ids=$(gh api --paginate "$releases?per_page=100" | jq -rs --arg t "$tag" '[.[][] | select(.tag_name==$t).id] | unique | if length>1 then error("ambiguous release") else .[0] // empty end')
+            id=${ids:-}
+            if [[ -z "$id" ]]; then
+              id=$(gh api "$releases" -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" -f name="$tag" -F draft=true --jq .id)
+            fi
+          fi
+          release="$releases/$id"
+          snapshot() { gh api "$release" | jq -e --arg t "$tag" 'select(.tag_name==$t)'; }
+          state=$(snapshot)
+          for file in "${assets[@]}"; do
+            digest=sha256:$(sha256sum "$file" | cut -d' ' -f1)
+            if jq -e --arg f "$file" --arg d "$digest" '.assets[] | select(.name==$f and .digest==$d and .state=="uploaded")' <<< "$state" >/dev/null; then continue; fi
+            [[ $(snapshot | jq .draft) == true ]]
+            old=$(jq -r --arg f "$file" '.assets[] | select(.name==$f).id' <<< "$state")
+            if [[ -n "$old" ]]; then gh api -X DELETE "$releases/assets/$old"; fi
+            gh api "https://uploads.github.com/repos/$GH_REPO/releases/$id/assets?name=$file" -H 'Content-Type: application/octet-stream' --input "$file" --silent
+          done
+          state=$(snapshot)
+          [[ $(jq '.assets | length' <<< "$state") == "${#assets[@]}" ]]
+          for file in "${assets[@]}"; do
+            digest=sha256:$(sha256sum "$file" | cut -d' ' -f1)
+            jq -e --arg f "$file" --arg d "$digest" '.assets[] | select(.name==$f and .digest==$d and .state=="uploaded")' <<< "$state" >/dev/null
+          done
+          check_tag
+          if [[ $(jq .draft <<< "$state") == true ]]; then
+            gh api -X PATCH "$release" -F draft=false | jq -e '.draft == false'
+          fi
