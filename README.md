@@ -41,7 +41,7 @@ I built Kompi (*Pi companion*) because not everything I want from Pi is a coding
 
    If your system policy doesn't allow the installer, download the [Linux archive](https://github.com/karlis-vagalis/kompi/releases/latest/download/kompi-daemon-x86_64-unknown-linux-gnu.tar.gz) or [Windows ZIP](https://github.com/karlis-vagalis/kompi/releases/latest/download/kompi-daemon-x86_64-pc-windows-msvc.zip) instead. Extract into a dedicated directory and use the full path to the extracted executable in place of `kompi` below.
 
-3. Open a new terminal. For v0.1.0, [prepare the worker once](daemon/README.md#released-worker-setup), then start Pi’s companion:
+3. Open a new terminal and start Pi’s companion:
 
    ```sh
    kompi serve
@@ -53,7 +53,7 @@ Prefer to build locally? See the [host](daemon/README.md) and [Android](android/
 
 **Access and privacy:** A paired phone can run Pi as your host user. Keep pairing codes private. Pi stores transcripts on the host; the phone caches chat data, and Pi sends requests to your configured model provider. To remove access, find the phone with `kompi devices list` and run `kompi devices revoke <endpoint>`.
 
-**Upgrading:** Check the release notes for breaking changes and update the app and daemon together. Stop the daemon, rerun the installer and restart. For v0.1.0 only, repeat the linked worker setup first.
+**Upgrading:** Check the release notes for breaking changes and update the app and daemon together. Stop the daemon, rerun the installer and restart. Starting with v0.1.1, the installer includes the worker modules; you no longer need to run `bun install`. If you’re staying on v0.1.0, follow the [older worker setup](daemon/README.md#released-worker-setup).
 
 **Why use Pi directly?** Pi Durable might be a better fit for session management, but I wanted one Pi setup to maintain. Kompi runs the same Pi CLI I use in the terminal, so both use the same settings, credentials, and extensions.
 
