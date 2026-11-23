@@ -36,7 +36,7 @@ jobs:
       - working-directory: daemon
         run: bun test
       - run: just rust-test
-      - if: inputs.package
+      - if: inputs.package || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: |
           rm -rf target/debug
           just daemon-build
@@ -58,7 +58,7 @@ jobs:
             rm -rf node_modules
           )
           tar czf kompi-linux-x86_64.tar.gz kompi-linux-x86_64
-      - if: inputs.package
+      - if: inputs.package || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: daemon
@@ -79,11 +79,13 @@ jobs:
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
         with:
           just-version: '1.59.0'
-      - run: sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0' 'ndk;30.0.16248370' 'cmake;4.1.2'
+      - name: Install pinned Android SDK components
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-37.0' 'build-tools;36.0.0' 'ndk;30.0.16248370' 'cmake;4.1.2'
       - working-directory: android
         run: ./gradlew --no-daemon :app:testDebugUnitTest
       - run: just apk-release
-      - if: inputs.package
+      - if: inputs.package || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: unsigned-apk
