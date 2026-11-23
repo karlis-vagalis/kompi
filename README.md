@@ -68,6 +68,14 @@ Prefer to build locally? See the [host](daemon/README.md) and [Android](android/
 
 **Why use Pi directly?** Pi Durable might be a better fit for session management, but I wanted one Pi setup to maintain. Kompi runs the same Pi CLI I use in the terminal, so both use the same settings, credentials, and extensions.
 
+## Uninstall
+
+**Android:** To revoke the phone’s access, run `kompi devices list` on each paired computer, then `kompi devices revoke <endpoint>` while its daemon is running. Uninstall Kompi from Android and, if you use Obtainium, remove its tracking entry. Uninstalling the app does not delete Pi transcripts on your computer.
+
+**Linux or Windows:** Stop `kompi serve` with Ctrl+C (or stop and disable the service if you configured one). Locate the installed executable with `command -v kompi` on Linux or `(Get-Command kompi.exe).Source` in PowerShell. Delete that executable and the `kompi-runtime-<hash>` folders beside it, **not** the shared `bin` directory. If you used a release archive in a dedicated folder, remove that folder instead.
+
+**Optional: erase pairing and local state.** With the daemon stopped, remove only `.pi/agent/kompi-native` under your home directory, or the dedicated state directory you configured with `--state-dir` or `KOMPI_STATE_DIR`. This deletes the host’s Kompi identity and pairings. Leave the rest of `.pi` intact to keep your Pi settings and conversations.
+
 Kompi is licensed under [AGPL-3.0-only](LICENSE). Third-party components retain their own licenses.
 
 Run `just` to list the [development recipes](justfile) · [Contributing](CONTRIBUTING.md) · [Release details](docs/releasing.md)
