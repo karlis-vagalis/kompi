@@ -122,7 +122,7 @@ internal fun AssistantSettings() {
             }
             KompiTextButton(onClick = { roleRequest.launch(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)) }, modifier = Modifier.heightIn(min = 48.dp)) { KompiText("Open Android assistant settings") }
             KompiText(if (selected) "Kompi is the selected Android assistant." else "Kompi is not the selected Android assistant.", style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
-            KompiText("In Nothing X, map a supported earbud gesture to Voice Assistant. Android/OEM support and the actual gesture still need verification on your phone. Pair a computer and download both voice models first.", style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
+            KompiText("Pair a computer and download both voice models. If your headset supports an assistant gesture, assign it to Voice Assistant in your headset settings. You can also start Live mode directly in Kompi.", style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
             KompiText("Screen context", style = KompiUi.typography.titleMedium)
             KompiSwitch(checked = screenContextEnabled, modifier = Modifier.semantics { contentDescription = "Collect screen text when invoking Kompi" }, onCheckedChange = { value ->
                 screenContextEnabled = value
