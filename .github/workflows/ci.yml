@@ -158,7 +158,6 @@ jobs:
           "$RUNNER_TEMP/native-tools/bin/pip" install 'uv==0.11.26'
           echo "$RUNNER_TEMP/native-tools/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/cmake/4.1.2/bin" >> "$GITHUB_PATH"
-      - run: android/app/src/main/cpp/whistle/fetch-native.sh
       - run: just apk-release
       - run: python3 scripts/verify-android-package.py android/app/build/outputs/apk/release/app-release-unsigned.apk
       - if: inputs.package || (github.event_name == 'push' && github.ref == 'refs/heads/main')

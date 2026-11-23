@@ -398,7 +398,7 @@ private fun KompiApp(
     val whistleInstaller = remember { WhistleModelInstaller(java.io.File(context.filesDir, "models/whistle")) }
     var whistleModel by remember { mutableStateOf<InstalledWhistleModel?>(null) }
     var whistleModelChecked by remember { mutableStateOf(false) }
-    var speechInputEngine by remember { mutableStateOf(SpeechInputEngine.fromStored(settings.getString(SpeechInputEngine.PREFERENCE, null))) }
+    var speechInputEngine by remember { mutableStateOf(SpeechInputEngine.read(settings)) }
     val parakeetInstaller = remember { ParakeetModelInstaller(java.io.File(context.filesDir, "models/parakeet")) }
     var parakeetState by remember { mutableStateOf<ParakeetInstallState>(ParakeetInstallState.Checking) }
     var parakeetDownloadJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
@@ -718,6 +718,7 @@ private fun KompiApp(
         }
     }
     LaunchedEffect(whistleInstaller) {
+        if (!SpeechInputEngine.Whistle.supportedOnDevice()) return@LaunchedEffect
         val verified = withContext(Dispatchers.IO) {
             whistleInstaller.installed()?.takeIf { WhistleModelInstaller.isVerifiedModel(it.file) }
         }

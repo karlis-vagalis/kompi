@@ -42,7 +42,7 @@ Gradle versions are pinned in [`app/build.gradle.kts`](app/build.gradle.kts). Th
 
 - The bundled Silero VAD model carries its [MIT license](app/src/main/assets/vad/LICENSE-SILERO.txt).
 - WebRTC AEC3 and Abseil notices are shipped in [APK assets](app/src/main/assets/licenses/webrtc-aec3.txt). The patched source inputs are pinned in `app/src/main/cpp/aec/prepare-native.sh`.
-- Whistle uses precompiled Needle from [the pinned fetch recipe](app/src/main/cpp/whistle/fetch-native.sh). The upstream library is downloaded at build time and statically linked on arm64. The [upstream Apache-2.0 license](https://huggingface.co/Cactus-Compute/needle3/blob/d6c7d6a2e9655505e0f8e23339356dd1705900eb/LICENSE) is [bundled in the APK](app/src/main/assets/licenses/needle.txt).
+- Public v0.1.0 does not fetch or link Whistle/Needle. The optional integration source is retained, but corresponding source for the pinned Needle archive has not been verified.
 - The listening-ready cue is an original synthesized sine sweep, not a recording.
 - Speech recognition and synthesis models downloaded by the app are separate from the APK and subject to the corresponding model cards and terms. Code uses Android's system monospace font.
 - Synthetic instrumentation speech fixtures have [documented provenance](app/src/androidTest/assets/live-speech-fixtures/provenance.md).

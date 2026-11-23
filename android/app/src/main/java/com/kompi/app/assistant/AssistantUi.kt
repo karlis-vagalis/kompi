@@ -104,7 +104,7 @@ internal fun AssistantSettings() {
     KompiSectionSurface {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             KompiText("Earbud assistant", style = KompiUi.typography.titleMedium)
-            KompiText("Use Android's assistant gesture to start Kompi Live with the selected computer. Your selected recognition engine and Kokoro voice are reused. Whistle-specific hints apply only when Whistle is selected.", style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
+            KompiText("Use Android's assistant gesture to start Kompi Live with the selected computer. Your selected recognition engine and Kokoro voice are reused.", style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
             KompiSwitch(checked = enabled, modifier = Modifier.semantics { contentDescription = "Enable earbud assistant, including locked-phone and background access" }, onCheckedChange = { value ->
                 if (value) confirmEnable = true
                 else { enabled = false; prefs.edit().putBoolean("assistantEnabled", false).apply(); AssistantConversationService.stop(context) }

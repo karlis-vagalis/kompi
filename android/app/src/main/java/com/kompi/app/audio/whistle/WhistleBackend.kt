@@ -1,6 +1,6 @@
 package com.kompi.app.audio.whistle
 
-import android.os.Build
+import com.kompi.app.audio.SpeechInputEngine
 import android.os.Looper
 import com.kompi.app.audio.WhistleModelInstaller
 import java.io.File
@@ -20,7 +20,7 @@ class WhistleBackend private constructor() {
         private val streamLock = Any()
         private var activeStreamOwner: Any? = null
 
-        fun isSupportedOnThisDevice(): Boolean = Build.SUPPORTED_ABIS.any { it == "arm64-v8a" }
+        fun isSupportedOnThisDevice(): Boolean = SpeechInputEngine.Whistle.supportedOnDevice()
 
         /** Loads one `.cact` model into Needle's process-global speech slot. */
         fun load(modelFile: File): WhistleBackend {

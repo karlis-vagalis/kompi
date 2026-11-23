@@ -21,6 +21,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     // Verified native inputs are already stripped; keep their exact bytes in the APK.
+    // Also exclude stale CMake output from developer worktrees.
+    packaging.jniLibs.excludes += "**/libkompi_whistle.so"
     packaging.jniLibs.keepDebugSymbols += setOf("**/libiroh_ffi.so", "**/libonnxruntime.so", "**/libonnxruntime4j_jni.so")
     sourceSets.getByName("main") {
         java.srcDir("../../third-party/iroh-ffi/kotlin")

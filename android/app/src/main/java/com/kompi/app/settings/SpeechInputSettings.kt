@@ -53,10 +53,10 @@ internal fun SpeechInputSettings(
                 KompiText("Recognition engine", style = KompiUi.typography.titleSmall)
                 KompiText(engine.label, style = KompiUi.typography.bodyMedium, color = KompiUi.colors.onSurfaceVariant)
             }
-            Box {
+            if (SpeechInputEngine.packaged.size > 1) Box {
                 KompiTextButton(onClick = { menu = true }, modifier = Modifier.heightIn(min = 48.dp)) { KompiText("Change") }
                 KompiDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    SpeechInputEngine.entries.forEach { option ->
+                    SpeechInputEngine.packaged.forEach { option ->
                         KompiDropdownMenuItem(text = { KompiText(option.label) }, onClick = { onSelect(option); menu = false })
                     }
                 }
@@ -82,7 +82,7 @@ internal fun SpeechInputSettings(
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { KompiText("Download Parakeet · 615 MB") }
             }
             if (!engine.supportedOnDevice()) KompiText("Parakeet requires a supported 64-bit Android device.", color = KompiUi.colors.error)
-            KompiText("Language is automatic. Whistle's language choice and vocabulary hints are retained for Whistle; Parakeet does not use them.",
+            KompiText("Language is detected automatically.",
                 style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
             KompiText("Parakeet TDT 0.6B v3 by NVIDIA · CC BY 4.0. LiteRT conversion by LiteRT Community.",
                 style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)

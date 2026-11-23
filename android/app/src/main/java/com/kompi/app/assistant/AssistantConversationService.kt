@@ -158,7 +158,7 @@ class AssistantConversationService : Service(), LifecycleOwner {
         val host = store.trustedMachines().first { it.machineId == hostId }
         check(host.pairing.confirmed) { "Finish pairing this computer before invoking the assistant." }
         val settings = getSharedPreferences("settings", MODE_PRIVATE)
-        val speechEngine = SpeechInputEngine.fromStored(settings.getString(SpeechInputEngine.PREFERENCE, null))
+        val speechEngine = SpeechInputEngine.read(settings)
         check(speechEngine.supportedOnDevice()) { "${speechEngine.label} is not supported on this device." }
         val model: SpeechRecognitionModel = withContext(Dispatchers.IO) {
             when (speechEngine) {

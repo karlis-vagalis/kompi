@@ -295,7 +295,7 @@ class LiveConversationController(
         // Even an already-detached controller may have uninterruptible native cleanup retaining
         // the app-wide lease. No extra global speech stop is authorized for an idle controller.
         val ownershipReleased = withContext(Dispatchers.IO) { MicCaptureCoordinator.awaitIdle(timeoutMillis = LiveVoiceLimits.MIC_HANDOFF_TIMEOUT_MS) }
-        check(ownershipReleased) { "Microphone/Whistle ownership is still closing; refusing opposite capture" }
+        check(ownershipReleased) { "Microphone ownership is still closing; refusing opposite capture" }
     }
 
     /** Compatibility name: despite its old name, this is NOT explicit End/cancellation. */
@@ -726,7 +726,7 @@ class LiveConversationController(
         lease?.setMicPermission(LiveAudioSession.MicPermission.Allowed(token))
         val input = try { createSpeechInput(lease) }
         catch (error: Throwable) {
-            events.trySend(Event.Failure(error.message ?: "Whistle is unavailable on this device", token)); return
+            events.trySend(Event.Failure(error.message ?: "Speech recognition is unavailable on this device", token)); return
         }
         val installed = synchronized(audioOwnershipLock) {
             if (closed || !liveRequested || token != generation || session != sessionGeneration) false

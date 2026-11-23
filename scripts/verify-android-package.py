@@ -17,6 +17,9 @@ def require_equal(name, actual, expected):
 
 
 with ZipFile(argv[1]) as apk, ZipFile(staged / 'onnxruntime.aar') as ort:
+    for name in apk.namelist():
+        if name.startswith('lib/') and any(engine in name.lower() for engine in ('whistle', 'needle')):
+            raise SystemExit(f'unavailable speech engine in APK: {name}')
     for abi in ('arm64-v8a', 'x86_64'):
         name = f'lib/{abi}/libiroh_ffi.so'
         require_equal(name, apk.read(name), (staged / 'jni' / abi / 'libiroh_ffi.so').read_bytes())
