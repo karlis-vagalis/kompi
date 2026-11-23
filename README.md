@@ -15,7 +15,7 @@ I built Kompi (*Pi companion*) because not everything I want from Pi is a coding
 
 ## What you can do with Kompi
 
-- **Talk while your hands are busy.** Switch to Live mode for a spoken conversation, hear Pi’s reply, and interrupt with a follow-up. If you’d rather review your words first, dictate into the chat box instead. The downloadable Parakeet model transcribes speech on your phone.
+- **Talk while your hands are busy.** Switch to Live mode for a spoken conversation, hear Pi’s reply, and interrupt with a follow-up. If you’d rather review your words first, dictate into the chat box instead. Live mode uses two downloadable speech models on your phone: **Parakeet** turns your voice into text, and **Kokoro** reads the reply aloud. In between, Kompi sends the transcript—not your microphone audio—to Pi on your paired computer, which uses your configured model provider to answer.
 - **Bring something into the conversation.** Share a screenshot from another Android app, add a question, and review the draft before sending it. No need to move the image to your computer first.
 - **Ask for an action on the phone itself.** Ask Pi to set a kitchen timer, open directions, or draft a text in your messaging app. Kompi uses Android’s own apps for these actions; drafting a message isn’t the same as sending it. You can also choose Kompi as Android’s digital assistant.
 - **Pick up where you left off.** Browse Pi sessions on a paired computer and continue an existing conversation instead of explaining the context again. Pair more than one computer and choose which one to talk to. [iroh](https://www.iroh.computer/) encrypts the connection and uses a direct route when possible or a relay when needed.
