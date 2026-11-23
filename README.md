@@ -16,7 +16,7 @@ There are already good ways to run a coding agent from a phone. I built Kompi (*
 
 1. On your phone, download `kompi.apk` from the [GitHub Releases page](https://github.com/karlis-vagalis/kompi/releases). Open the APK to install it. If Android asks, allow installation from the app you opened it with.
 2. On an x86-64 Linux computer with Pi, Node.js 22.19+, Bun, and `flock`, unpack `kompi-linux-x86_64.tar.gz` from the same release. Inside the extracted directory, run `(cd worker && bun install --production --frozen-lockfile)`, then `./kompi serve`.
-3. In another terminal in that directory, run `./kompi pair`. On the phone, open **Computers**, scan the code, and send “Hello”.
+3. In another terminal in that directory, run `./kompi pair`. On the phone, open **Computers** and scan the code to pair. Kompi uses [iroh](https://www.iroh.computer/) for the encrypted connection between your phone and computer, connecting directly when possible or through a relay when needed. Send “Hello” to try it.
 
 Prefer to build locally? See the [host](daemon/README.md) and [Android](android/README.md) instructions.
 
