@@ -903,7 +903,7 @@ impl SqliteStore {
     }
 
     pub async fn sync_events_after(&self, peer: &PeerKey, after: &SyncCursor, limit: u8) -> Result<(Vec<SyncEvent>, SyncCursor)> {
-        let after_value = after.as_str().parse::<i64>().context("sync cursor exceeds SQLite range")?;
+        let after_value = after.as_i64();
         // Read the compaction floor and event page from one SQLite snapshot. Otherwise
         // compaction could advance the floor and delete rows between these reads, making
         // a stale cursor appear valid while returning an incomplete page.

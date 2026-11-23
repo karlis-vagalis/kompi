@@ -148,9 +148,23 @@ impl Listener {
         })
     }
     pub async fn accept(&mut self) -> io::Result<(ServerStream, ())> {
-        self.next.connect().await?;
-        let next = create(&self.path, false)?;
+        use windows_sys::Win32::Foundation::ERROR_NO_DATA;
+        if let Err(error) = self.next.connect().await {
+            // Client connected and left before ConnectNamedPipe. Replace the spent
+            // instance before telling the supervisor that retry is possible.
+            if error.raw_os_error() == Some(ERROR_NO_DATA as i32) {
+                self.next = self.replacement()?;
+                return Err(io::Error::new(io::ErrorKind::ConnectionAborted, error));
+            }
+            return Err(error);
+        }
+        let next = self.replacement()?;
         Ok((std::mem::replace(&mut self.next, next), ()))
+    }
+
+    fn replacement(&self) -> io::Result<ServerStream> {
+        // The current instance can no longer accept; failure to replace it is terminal.
+        create(&self.path, false).map_err(|error| io::Error::other(format!("create next control pipe instance: {error}")))
     }
 }
 fn verify(pipe: &NamedPipeClient) -> io::Result<()> {

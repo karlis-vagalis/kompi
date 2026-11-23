@@ -53,6 +53,7 @@ use kompi_protocol::ChatTimingStage as Timing;
 use crate::chat_timing::{ChatTiming, Trace};
 
 mod chat_stream;
+mod control_listener;
 
 fn timing(trace: &Option<Trace>, stage: Timing) {
     if let Some(trace) = trace { trace.record(stage); }
@@ -326,9 +327,14 @@ impl Daemon {
     }
 
     async fn run(self) -> Result<()> {
-        self.bind_control().await?;
+        self.run_with_accept(async |listener| listener.accept().await.map(|(stream, _)| stream)).await
+    }
+
+    async fn run_with_accept(self, mut accept: impl AsyncFnMut(&mut crate::local_ipc::Listener) -> std::io::Result<crate::local_ipc::ServerStream>) -> Result<()> {
+        let mut listener = self.bind_control().await?;
+        let mut background = tokio::task::JoinSet::new();
         let relay_endpoint = self.endpoint.clone();
-        tokio::spawn(async move {
+        background.spawn(async move {
             if timeout(Duration::from_secs(15), relay_endpoint.online()).await.is_ok() {
                 eprintln!("Kompi relay connection established");
             } else {
@@ -342,13 +348,13 @@ impl Daemon {
         });
         let endpoint = self.endpoint.clone();
         let daemon = self.clone();
-        tokio::spawn(async move {
+        background.spawn(async move {
             daemon.accept_loop(endpoint).await;
         });
         let push_dispatcher=self.clone();
-        tokio::spawn(async move { push_dispatcher.push_dispatch_loop().await; });
+        background.spawn(async move { push_dispatcher.push_dispatch_loop().await; });
         let sweeper = self.clone();
-        tokio::spawn(async move {
+        background.spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(5));
             loop {
                 ticker.tick().await;
@@ -365,18 +371,21 @@ impl Daemon {
             }
         });
         let mut running = self.running.subscribe();
-        tokio::select! {
-            _=shutdown_signal()=>{let _=self.running.send(false);},
-            _=async { while *running.borrow() { if running.changed().await.is_err() || !*running.borrow() { break; } } }=>{},
-        }
+        let result = tokio::select! {
+            result = self.serve_listener(async move || accept(&mut listener).await) => result.context("local control listener failed"),
+            _ = shutdown_signal() => Ok(()),
+            _ = running.wait_for(|running| !*running) => Ok(()),
+        };
+        self.running.send_replace(false);
+        background.shutdown().await;
         self.worker.shutdown().await;
         self.endpoint.close().await;
         #[cfg(unix)]
         let _ = fs::remove_file(&self.control_path);
-        Ok(())
+        result
     }
 
-    async fn bind_control(&self) -> Result<()> {
+    async fn bind_control(&self) -> Result<crate::local_ipc::Listener> {
         #[cfg(unix)]
         let listener = {
             if let Some(parent) = self.control_path.parent() {
@@ -407,32 +416,31 @@ impl Daemon {
             listener
         };
         #[cfg(windows)]
-        let mut listener = crate::local_ipc::Listener::bind(&self.control_path)?;
-        let daemon = self.clone();
+        let listener = crate::local_ipc::Listener::bind(&self.control_path)?;
+        Ok(listener)
+    }
+
+    async fn serve_listener(&self, mut accept: impl AsyncFnMut() -> std::io::Result<crate::local_ipc::ServerStream>) -> std::io::Result<()> {
         let control_permits = self.control_permits.clone();
-        tokio::spawn(async move {
-            loop {
-                let (stream, _) = match listener.accept().await {
-                    Ok(value) => value,
-                    Err(_) => break,
-                };
-                let Ok(permit) = control_permits.clone().try_acquire_owned() else {
-                    drop(stream);
-                    continue;
-                };
-                let daemon = daemon.clone();
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    if let Err(error) = daemon.serve_control(stream).await {
-                        eprintln!(
-                            "Kompi control connection rejected: {}",
-                            safe_error(&error.to_string())
-                        );
-                    }
-                });
-            }
-        });
-        Ok(())
+        let mut clients = tokio::task::JoinSet::new();
+        loop {
+            let stream = control_listener::accept_with_retry(&mut accept).await?;
+            while clients.try_join_next().is_some() {}
+            let Ok(permit) = control_permits.clone().try_acquire_owned() else {
+                drop(stream);
+                continue;
+            };
+            let daemon = self.clone();
+            clients.spawn(async move {
+                let _permit = permit;
+                if let Err(error) = daemon.serve_control(stream).await {
+                    eprintln!(
+                        "Kompi control connection rejected: {}",
+                        safe_error(&error.to_string())
+                    );
+                }
+            });
+        }
     }
 
     async fn serve_control(&self, mut stream: crate::local_ipc::ServerStream) -> Result<()> {
@@ -1693,7 +1701,7 @@ impl Daemon {
                     let _ = revisions.borrow_and_update();
                     let Some(cursor) = sync_cursor.as_ref() else { continue };
                     let peer = crate::sqlite_store::PeerKey::try_from(endpoint.to_owned())?;
-                    let after = cursor.as_str().parse::<i64>().context("sync cursor exceeds SQLite range")?;
+                    let after = cursor.as_i64();
                     let (floor, current) = self.sqlite.journal_bounds(&peer).await?;
                     if after < floor {
                         connection.send(&Envelope::new(

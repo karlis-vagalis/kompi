@@ -85,7 +85,7 @@ impl ChatTiming {
         cursor: Option<ChatTimingCursor>,
     ) -> Result<kompi_protocol::Message> {
         let after = match cursor.filter(|c| c.store_id == self.store_id) {
-            Some(cursor) => cursor.after.as_str().parse::<i64>()?,
+            Some(cursor) => cursor.after.as_i64(),
             None => 0,
         };
         let records: Vec<(i64, String)> = sqlx::query_as(
