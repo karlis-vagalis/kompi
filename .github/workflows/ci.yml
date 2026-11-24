@@ -11,7 +11,55 @@ on:
 permissions:
   contents: read
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      jobs: ${{ steps.route.outputs.jobs }}
+      cache: ${{ steps.route.outputs.cache }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: route
+        env:
+          CI_PACKAGE: ${{ inputs.package || false }}
+        run: python3 scripts/ci-plan.py route
+      - name: Exercise CI routing and gate
+        run: python3 -B -m unittest discover -s scripts -p 'test_ci_*.py'
+  prek:
+    needs: plan
+    if: fromJSON(needs.plan.outputs.jobs).prek
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Validate hook configuration (without running project hooks)
+        run: |
+          configs=() manifests=()
+          for config in prek.toml .pre-commit-config.yaml .pre-commit-config.yml; do
+            if [[ -e "$config" || -L "$config" ]]; then configs+=("$config"); fi
+          done
+          for manifest in .pre-commit-hooks.yaml .pre-commit-hooks.yml; do
+            if [[ -e "$manifest" || -L "$manifest" ]]; then manifests+=("$manifest"); fi
+          done
+          if (( ${#configs[@]} + ${#manifests[@]} == 0 )); then
+            echo 'No hook configuration or manifest in this checkout.'
+            exit 0
+          fi
+          cd "$RUNNER_TEMP"
+          file=prek-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --location --retry 3 -o "$file" "https://github.com/j178/prek/releases/download/v0.5.11/$file"
+          echo "a4ff4c70aef6f21925aa52b82d0746095fbd66893ac3b053e859f6d3454c16ae  $file" | sha256sum --check
+          tar -xf "$file"
+          validator="$PWD/${file%.tar.gz}/prek"
+          cd "$GITHUB_WORKSPACE"
+          if (( ${#configs[@]} )); then "$validator" validate-config "${configs[@]}"; fi
+          if (( ${#manifests[@]} )); then "$validator" validate-manifest "${manifests[@]}"; fi
   protocol-regeneration:
+    needs: plan
+    if: fromJSON(needs.plan.outputs.jobs).protocol-regeneration
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -21,6 +69,10 @@ jobs:
         with:
           bun-version: 1.3.10
       - run: rustup update stable && rustup default stable
+      - uses: ./.github/actions/cargo-downloads
+        with:
+          mode: ${{ needs.plan.outputs.cache }}
+          profile: dev-test0-dist
       - working-directory: pi-extension
         run: bun install --frozen-lockfile
       - name: Rebuild and compare generated protocol artifacts
@@ -37,6 +89,8 @@ jobs:
           changes=$(git status --porcelain --untracked-files=all -- "${generated[@]}" protocol/test-vectors)
           if [[ -n "$changes" ]]; then printf '%s\n' "$changes"; exit 1; fi
   host:
+    needs: plan
+    if: fromJSON(needs.plan.outputs.jobs).host
     runs-on: ubuntu-24.04
     env:
       CARGO_PROFILE_TEST_DEBUG: '0'
@@ -51,6 +105,10 @@ jobs:
         with:
           bun-version: 1.3.10
       - run: rustup update stable && rustup default stable
+      - uses: ./.github/actions/cargo-downloads
+        with:
+          mode: ${{ needs.plan.outputs.cache }}
+          profile: dev-test0-dist
       - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
         with:
           just-version: '1.59.0'
@@ -62,25 +120,37 @@ jobs:
         run: bun test
       - run: just rust-test
   sources:
+    needs: plan
+    if: fromJSON(needs.plan.outputs.jobs).sources
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
       - run: rustup update stable && rustup default stable
-      - run: bash scripts/prepare-sources.sh
+      - uses: ./.github/actions/cargo-downloads
+        with:
+          mode: ${{ needs.plan.outputs.cache }}
+          profile: dev-test0-dist
+          publish: 'true'
+      - if: inputs.package || github.ref_type == 'tag'
+        run: bash scripts/prepare-sources.sh
+      - if: ${{ !inputs.package && github.ref_type != 'tag' }}
+        run: bash scripts/prepare-sources.sh --notices-only
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: notices
           path: target/package-inputs/notices.tar.gz
           if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - if: inputs.package || github.ref_type == 'tag'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: dependency-sources
           path: target/package-inputs/rust-dependency-sources.tar.gz
           if-no-files-found: error
   bundle:
-    needs: sources
+    needs: [plan, sources]
+    if: fromJSON(needs.plan.outputs.jobs).bundle
     strategy:
       fail-fast: false
       matrix:
@@ -115,6 +185,11 @@ jobs:
           python-version: '3.12'
       - run: rustup update stable
       - run: rustup default stable
+      - uses: ./.github/actions/cargo-downloads
+        with:
+          mode: ${{ needs.plan.outputs.cache }}
+          profile: dev-test0-dist
+          publish: ${{ runner.os == 'Windows' }}
       - if: runner.os == 'Windows'
         run: cargo test --locked --workspace
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -153,7 +228,17 @@ jobs:
             target/distrib/kompi-daemon-installer.${{ matrix.installer }}
           if-no-files-found: error
   android:
+    needs: plan
+    if: fromJSON(needs.plan.outputs.jobs).android
     runs-on: ubuntu-24.04
+    env:
+      CI_CACHE: ${{ needs.plan.outputs.cache }}
+      ANDROID_NDK_VERSION: '30.0.16248370'
+      ANDROID_CMAKE_VERSION: '4.1.2'
+      ANDROID_PLATFORM: 'android-37.0'
+      ANDROID_BUILD_TOOLS: '36.0.0'
+      CARGO_NDK_VERSION: '3.5.4'
+      UV_VERSION: '0.11.26'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -167,22 +252,68 @@ jobs:
           just-version: '1.59.0'
       - name: Install pinned Android SDK components
         run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-37.0' 'build-tools;36.0.0' 'ndk;30.0.16248370' 'cmake;4.1.2'
-      - name: Build Android native dependencies from reviewed inputs
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;$ANDROID_PLATFORM" "build-tools;$ANDROID_BUILD_TOOLS" "ndk;$ANDROID_NDK_VERSION" "cmake;$ANDROID_CMAKE_VERSION"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+      - run: rustup update stable && rustup default stable
+      - name: Identify Android cache inputs
+        if: env.CI_CACHE != 'off'
+        id: android-keys
+        env:
+          GRADLE_CONFIG: ${{ hashFiles('android/**/*.gradle*', 'android/**/*.toml', 'android/**/*.properties', 'android/gradle/**', 'android/gradlew*') }}
+          NATIVE_CONFIG: ${{ hashFiles('scripts/prepare-android.sh', 'scripts/android-rust-notices.py', '.github/workflows/ci.yml', '.cargo/**', 'Cargo.*', 'rust-toolchain*') }}
+        run: bash scripts/ci-android-cache-keys.sh
+      - name: Restore Gradle dependencies
+        if: env.CI_CACHE != 'off'
+        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        id: gradle-deps
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: gradle-downloads-v1-${{ steps.android-keys.outputs.gradle }}
+      - name: Restore Gradle task outputs (main only)
+        if: env.CI_CACHE == 'main'
+        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        id: gradle-build
+        with:
+          path: ~/.gradle/caches/build-cache-1
+          key: gradle-build-v1-${{ steps.android-keys.outputs.gradle }}-${{ steps.android-keys.outputs.week }}
+          restore-keys: gradle-build-v1-${{ steps.android-keys.outputs.gradle }}-
+      - name: Restore reviewed native staging (main only, exact key)
+        if: env.CI_CACHE == 'main'
+        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        id: native-cache
+        with:
+          path: |
+            android/.native-build/onnxruntime.aar
+            android/.native-build/assets/licenses/iroh-dependencies.zip
+            android/.native-build/jni/arm64-v8a/libiroh_ffi.so
+            android/.native-build/jni/x86_64/libiroh_ffi.so
+            android/.native-build/sha256sums
+          key: android-native-v1-${{ steps.android-keys.outputs.native }}
+      - name: Verify staged Android natives or rebuild from reviewed inputs
+        env:
+          NATIVE_CACHE_HIT: ${{ steps.native-cache.outputs.cache-hit }}
         run: |
-          rustup update stable
-          rustup default stable
+          if [[ "$NATIVE_CACHE_HIT" == true ]]; then
+            if bash scripts/prepare-android.sh --verify; then exit 0; fi
+            echo '::warning::Invalid Android native cache; rebuilding from source'
+            rm -rf -- android/.native-build
+          fi
           rustup target add aarch64-linux-android x86_64-linux-android
-          cargo install cargo-ndk --locked --version 3.5.4
-          ANDROID_NDK_HOME="$ANDROID_HOME/ndk/30.0.16248370" bash scripts/prepare-android.sh
+          cargo install cargo-ndk --locked --version "$CARGO_NDK_VERSION"
+          bash scripts/prepare-android.sh
+          bash scripts/prepare-android.sh --verify
+      - if: env.CI_CACHE == 'main'
+        run: echo 'GRADLE_OPTS=-Dorg.gradle.caching=true' >> "$GITHUB_ENV"
       - working-directory: android
         run: ./gradlew --no-daemon :app:testDebugUnitTest
       - name: Install native build tools
         run: |
           python3 -m venv "$RUNNER_TEMP/native-tools"
-          "$RUNNER_TEMP/native-tools/bin/pip" install 'uv==0.11.26'
+          "$RUNNER_TEMP/native-tools/bin/pip" install "uv==$UV_VERSION"
           echo "$RUNNER_TEMP/native-tools/bin" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/cmake/4.1.2/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/cmake/$ANDROID_CMAKE_VERSION/bin" >> "$GITHUB_PATH"
       - name: Build APKs for the emulator regression
         working-directory: android
         run: ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
@@ -200,7 +331,7 @@ jobs:
           for abi in arm64-v8a x86_64; do
             python3 scripts/verify-android-package.py "android/app/build/outputs/apk/release/app-$abi-release-unsigned.apk" "$abi"
           done
-      - if: inputs.package || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      - if: inputs.package || github.ref_type == 'tag' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: unsigned-apk
@@ -208,8 +339,37 @@ jobs:
             android/app/build/outputs/apk/release/app-arm64-v8a-release-unsigned.apk
             android/app/build/outputs/apk/release/app-x86_64-release-unsigned.apk
           if-no-files-found: error
+      - name: Persist Gradle dependencies (main only)
+        if: env.CI_CACHE == 'main' && steps.gradle-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: ${{ steps.gradle-deps.outputs.cache-primary-key }}
+      - name: Bound Gradle build cache before upload
+        if: env.CI_CACHE == 'main' && steps.gradle-build.outputs.cache-hit != 'true'
+        run: python3 scripts/ci-trim-gradle-cache.py
+      - name: Persist Gradle task outputs (main only)
+        if: env.CI_CACHE == 'main' && steps.gradle-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        with:
+          path: ~/.gradle/caches/build-cache-1
+          key: ${{ steps.gradle-build.outputs.cache-primary-key }}
+      - name: Persist verified native staging (main only)
+        if: env.CI_CACHE == 'main' && steps.native-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        with:
+          path: |
+            android/.native-build/onnxruntime.aar
+            android/.native-build/assets/licenses/iroh-dependencies.zip
+            android/.native-build/jni/arm64-v8a/libiroh_ffi.so
+            android/.native-build/jni/x86_64/libiroh_ffi.so
+            android/.native-build/sha256sums
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
   reply-recovery-emulator:
-    needs: android
+    needs: [plan, android]
+    if: fromJSON(needs.plan.outputs.jobs).reply-recovery-emulator
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -248,3 +408,15 @@ jobs:
           adb install androidTest/debug/app-debug-androidTest.apk
           adb shell am instrument -w -e class 'com.kompi.app.ChatOutboxBehaviorTest#interruptedDraftSubmissionClearsOnlyItsDurablyEnqueuedVersion,com.kompi.app.ChatTransportContinuityTest#m1_m2_m3_r3_realQuicWithheldAckAndTransportReplacementPreserveOneBubble,com.kompi.app.DeliveryAppearanceTest,com.kompi.app.ChatMessageContinuityTest,com.kompi.app.ReplyRecoveryScreenTest,com.kompi.app.ChatTransportContinuityTest#completedOfflineNeedsReadableReplyAfterReopen,com.kompi.app.ChatTransportContinuityTest#firstTurnCompletesWithoutLeavingNewChat,com.kompi.app.ChatProjectionBehaviorTest#r3_s1_eventsBufferedBeforeSnapshotApplyOnlyAfterItsBarrier' com.kompi.app.test/androidx.test.runner.AndroidJUnitRunner | tee "$RUNNER_TEMP/result"
           grep -Eq '^OK \(14 tests\)' "$RUNNER_TEMP/result"
+  gate:
+    name: CI ready
+    needs: [plan, prek, protocol-regeneration, host, sources, bundle, android, reply-recovery-emulator]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 scripts/ci-plan.py gate

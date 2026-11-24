@@ -1,0 +1,45 @@
+name: Cargo downloads
+description: Cache locked registry archives and Git objects, never Cargo target directories or executables
+inputs:
+  mode:
+    description: off (release), downloads (PR read-only), or main
+    required: true
+  profile:
+    description: Build profile family covered by these downloads
+    required: true
+  publish:
+    description: Fetch and publish on main; only one job per platform is the writer
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - if: inputs.mode != 'off'
+      id: identity
+      shell: bash
+      run: |
+        set -o pipefail
+        info=$(rustc -vV)
+        target=$(awk '/^host: / {print $2}' <<< "$info")
+        test -n "$target"
+        compiler=$(sha256sum <<< "$info" | cut -d ' ' -f1)
+        printf 'compiler=%s\ntarget=%s\n' "$compiler" "$target" >> "$GITHUB_OUTPUT"
+    - if: inputs.mode != 'off'
+      id: restore
+      uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+      with:
+        path: |
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: cargo-downloads-v1-${{ runner.os }}-${{ steps.identity.outputs.target }}-${{ inputs.profile }}-${{ steps.identity.outputs.compiler }}-${{ hashFiles('Cargo.lock', 'third-party/iroh-ffi/Cargo.lock') }}
+    - if: inputs.mode == 'main' && inputs.publish == 'true' && steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TARGET: ${{ steps.identity.outputs.target }}
+      run: cargo fetch --locked --target "$TARGET"
+    - if: inputs.mode == 'main' && inputs.publish == 'true' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+      with:
+        path: |
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: ${{ steps.restore.outputs.cache-primary-key }}
