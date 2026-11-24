@@ -40,8 +40,7 @@ impl Daemon {
             .await?;
         };
         send.set_priority(INTERACTIVE_STREAM_PRIORITY)?;
-        let publisher = self.worker.pi_frames.conversation(conversation);
-        let mut publications = publisher.subscribe();
+        let (_publisher, mut publications) = self.worker.pi_frames.conversation(conversation);
         let sender = ReadySender::new(send);
         sender
             .send(&Envelope::new(
@@ -65,7 +64,7 @@ impl Daemon {
         let peer = endpoint.to_owned();
         let projection_sender = sender.clone();
         let mut projection = tokio::spawn(async move {
-            while let Ok(mut published) = publications.recv().await {
+            while let Some(mut published) = publications.recv().await {
                 if !projection_daemon.is_current_connection(&peer, generation) {
                     break;
                 }
@@ -225,7 +224,7 @@ impl Daemon {
                     ChatCommand::Snapshot => {
                         let token = snapshot_token.expect("snapshot commands own a projection token");
                         if daemon.snapshot_conversation(&peer, generation, conversation, Some(token.clone())).await.is_ok() { return; }
-                        barrier.lock().expect("chat projection poisoned").fail(&token);
+                        if !barrier.lock().expect("chat projection poisoned").fail(&token) { return; }
                         snapshot_error(Some(conversation))
                     }
                     ChatCommand::Activate => daemon.activate_conversation(&peer, generation, conversation).await
@@ -269,10 +268,12 @@ impl ProjectionBarrier {
         };
         true
     }
-    fn fail(&mut self, id: &RequestId) {
+    fn fail(&mut self, id: &RequestId) -> bool {
         if matches!(self, Self::Pending { token, .. } if token == id) {
             *self = Self::NeedsSnapshot;
+            return true;
         }
+        false
     }
     fn route(&mut self, publication: &mut PiPublication) -> ProjectionRoute {
         let snapshot = matches!(publication.frame.kind, PiFrameKind::Snapshot);
@@ -292,6 +293,48 @@ impl ProjectionBarrier {
             Self::Live(_) => ProjectionRoute::Reset,
             _ => ProjectionRoute::Drop,
         }
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn targeted_snapshot_uses_requesting_route_and_large_scoped_snapshot_survives_backpressure() {
+        let buses = PiPublishers::new();
+        let mut primary = buses.control.subscribe();
+        let conversation = ConversationId::from(uuid::Uuid::new_v4());
+        let (_lease, mut scoped) = buses.conversation(conversation);
+        let token = RequestId::parse("internal".to_owned()).unwrap();
+        let request = RequestId::parse("client".to_owned()).unwrap();
+        let mut publication = PiPublication {
+            origin: uuid::Uuid::new_v4(), primary_generation: None,
+            frame: kompi_protocol::PiFrame { conversation_id: conversation, session_id: "fixture".into(),
+                epoch: "epoch".into(), sequence: 0, kind: PiFrameKind::Snapshot,
+                part: 0, last: true, json: "{}".into(), request_id: Some(token.clone()) },
+        };
+        buses.primary.lock().unwrap().insert((conversation, token), (7, request.clone()));
+        buses.publish(publication.clone()).await;
+        let reply = primary.try_recv().unwrap();
+        assert_eq!(reply.primary_generation, Some(7));
+        assert_eq!(reply.frame.request_id, Some(request));
+        assert!(scoped.try_recv().is_err());
+
+        publication.frame.request_id = Some(RequestId::parse("scoped".to_owned()).unwrap());
+        let producer = tokio::spawn(async move {
+            for part in 0..300 {
+                publication.frame.part = part;
+                publication.frame.last = part == 299;
+                buses.publish(publication.clone()).await;
+            }
+        });
+        tokio::task::yield_now().await;
+        for part in 0..300 {
+            assert_eq!(scoped.recv().await.unwrap().frame.part, part);
+        }
+        producer.await.unwrap();
+        assert!(primary.try_recv().is_err());
     }
 }
 

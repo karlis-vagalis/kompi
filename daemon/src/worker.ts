@@ -452,8 +452,8 @@ async function handleRequest(envelope: ReturnType<typeof parseWorkerRequest>): P
       const live = liveSession?.conversationId === message.payload.conversationId ? liveSession : undefined;
       if (!live) { emitError(id, "session-not-found", undefined, message.payload.conversationId); return; }
       try {
-        const snapshot = await live.session.snapshot();
-        await queuePiRecord(live.conversationId, live.session.sessionId, live.session.epoch, snapshot.sequence, "snapshot", snapshot.data, message.payload.requestId ?? null);
+        await live.session.snapshot(undefined, snapshot =>
+          queuePiRecord(live.conversationId, live.session.sessionId, live.session.epoch, snapshot.sequence, "snapshot", snapshot.data, message.payload.requestId ?? null));
         send(id, { type: "snapshot-done", payload: { conversationId: live.conversationId } });
       } catch { emitError(id, "snapshot-failed", undefined, live.conversationId); }
       return;

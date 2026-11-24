@@ -46,7 +46,12 @@ const responseSchema = z.discriminatedUnion("success", [
   z.object({ ...responseBase, success: z.literal(true), data: z.unknown().optional() }),
   z.object({ ...responseBase, success: z.literal(false), error: z.string() }),
 ]);
-type Pending = { barrier: boolean; command: string; resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> };
+const entriesResponse = z.object({ sequence: z.number().int().nonnegative(), data: z.object({
+  entries: z.array(z.object({ type: z.string(), id: z.string().min(1), parentId: z.string().nullable() }).passthrough()),
+  leafId: z.string().nullable(),
+}).passthrough() });
+type Entries = z.infer<typeof entriesResponse>;
+type Pending = { barrier?: (value: unknown) => unknown; command: string; resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> };
 
 /** Pi explicitly rejected an RPC command, rather than losing its response. */
 export class PiRpcCommandError extends Error {}
@@ -127,14 +132,18 @@ export class PiRpcClient {
 
   setReadBackpressure(paused: boolean): void { if (paused) this.child.stdout.pause(); else this.child.stdout.resume(); }
 
-  async getEntries(since?: string) {
-    return z.object({ sequence: z.number().int().nonnegative(), data: z.object({
-      entries: z.array(z.object({ type: z.string(), id: z.string().min(1), parentId: z.string().nullable() }).passthrough()),
-      leafId: z.string().nullable(),
-    }).passthrough() }).parse(await this.request({ type: "get_entries", ...(since ? { since } : {}) }, 60_000, true));
+  async getEntries(since?: string, onSnapshot?: (snapshot: Entries) => Promise<void>): Promise<Entries> {
+    let snapshot: Entries | undefined;
+    await this.request({ type: "get_entries", ...(since ? { since } : {}) }, 60_000, value => {
+      snapshot = entriesResponse.parse(value);
+      // Enqueue before parsing any later event in the same stdout chunk.
+      return onSnapshot?.(snapshot);
+    });
+    if (!snapshot) throw new Error("Missing Pi snapshot");
+    return snapshot;
   }
 
-  async request(command: RpcCommand, timeoutMs = 30_000, barrier = false): Promise<unknown> {
+  async request(command: RpcCommand, timeoutMs = 30_000, barrier?: Pending["barrier"]): Promise<unknown> {
     if (this.failure) throw this.failure;
     if (this.pending.size >= 32) throw new Error("Too many pending Pi RPC commands");
     const id = randomUUID();
@@ -142,7 +151,9 @@ export class PiRpcClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error("Pi RPC command timed out"));
-        this.fail(new Error("Pi RPC command timed out"));
+        // A late, read-only history result can be discarded by request ID.
+        // Recovery must never terminate an unrelated in-flight prompt.
+        if (command.type !== "get_entries") this.fail(new Error("Pi RPC command timed out"));
       }, timeoutMs);
       this.pending.set(id, { barrier, command: command.type, resolve, reject, timer });
     });
@@ -213,7 +224,10 @@ export class PiRpcClient {
       if (pending.command !== response.command) throw new Error("Pi RPC response command mismatch");
       this.pending.delete(response.id);
       clearTimeout(pending.timer);
-      if (response.success) pending.resolve(pending.barrier ? { data: response.data, sequence: this.eventSequence } : response.data);
+      if (response.success) {
+        try { pending.resolve(pending.barrier ? pending.barrier({ data: response.data, sequence: this.eventSequence }) : response.data); }
+        catch (error) { pending.reject(error instanceof Error ? error : new Error("Invalid Pi response")); }
+      }
       else pending.reject(new PiRpcCommandError(`Pi RPC ${pending.command} command failed`));
       return;
     }

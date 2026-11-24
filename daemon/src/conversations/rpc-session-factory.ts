@@ -57,7 +57,7 @@ export interface ConversationSession {
   readonly sessionFile: string;
   readonly sessionName: string;
   prompt(text: string, configuration: ChatConfiguration, attachments?: readonly PromptAttachment[]): Promise<PromptStats>;
-  snapshot(since?: string): ReturnType<PiRpcClient["getEntries"]>;
+  snapshot: PiRpcClient["getEntries"];
   readonly epoch: string;
   abort(): Promise<void>;
   dispose(): Promise<void>;
@@ -97,7 +97,7 @@ function wrap(runtime: Runtime, state: Awaited<ReturnType<PiRpcClient["getState"
     sessionFile: state.sessionFile,
     sessionName,
     epoch: client.epoch,
-    snapshot: (since) => client.getEntries(since),
+    snapshot: (since, publish) => client.getEntries(since, publish),
     prompt: async (text, configuration, attachments = []) => {
       await applyModel(client, configuration);
       let started = 0;

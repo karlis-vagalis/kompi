@@ -43,7 +43,10 @@ async function respond(command) {
     : command.type === "get_available_models" ? { models: [{ provider: "fake", id: "model", name: "Fake" }] }
     : command.type === "get_available_thinking_levels" ? { levels: ["off"] }
     : command.type === "prompt" ? { disposition: "started" } : {};
-  send({ id: command.id, type: "response", command: command.type, success: true, data });
+  const response = { id: command.id, type: "response", command: command.type, success: true, data };
+  if (command.type === "get_entries" && existsSync(dir + "/race-snapshot")) {
+    process.stdout.write(JSON.stringify(response) + "\\n" + JSON.stringify({type:"fixture_event", text:"after history"}) + "\\n");
+  } else send(response);
   if (command.type === "abort") send({ type: "agent_settled", aborted: true });
 }
 let input = "";
@@ -191,6 +194,19 @@ test("a large event followed by a large snapshot leaves the reader available for
   f.child.stdin.end();
   await f.finish(0);
 }, 15_000);
+
+test("an event in the same pipe read after a snapshot response follows the snapshot on the wire", async () => {
+  const f = await fixture();
+  f.send({ type: "create", payload: { conversationId: f.conversationId, sessionName: "Lifecycle" } });
+  await waitFor(() => f.frames().some(frame => frame.message.type === "created"), "created");
+  await writeFile(join(f.directory, "race-snapshot"), "");
+  f.send({ type: "snapshot", payload: { conversationId: f.conversationId } });
+  const kinds = () => f.frames().flatMap(({message}) => message.type === "pi-frame" ? [message.payload.frame.kind] : []);
+  await waitFor(() => kinds().includes("event") && kinds().includes("snapshot"), "both records");
+  expect(kinds().slice(-2)).toEqual(["snapshot", "event"]);
+  f.child.stdin.end();
+  await f.finish(0);
+});
 
 test("EOF during the prompt snapshot cannot dispatch a prompt afterwards", async () => {
   const f = await fixture({ delaySnapshot: true });

@@ -65,7 +65,7 @@ fn audit_ack_write(trace: &Option<Trace>, sent: bool) {
 
 const RPC_UI_CAPABILITY: &str = "pi-rpc-ui";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const CONTROL_FRAME_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_CONNECTIONS: usize = 32;
 const INTERACTIVE_STREAM_PRIORITY: i32 = 1;
 const BULK_STREAM_PRIORITY: i32 = 0;
@@ -1349,7 +1349,9 @@ impl Daemon {
                 let frame = publication.frame;
                 if !daemon.is_current_connection(&peer, generation) { break; }
                 if !pi_workers.is_current_origin_for(&peer, frame.conversation_id, publication.origin).await { continue; }
-                if chat_routes.active.lock().expect("chat routes poisoned").contains(&frame.conversation_id) { continue; }
+                if let Some(owner) = publication.primary_generation {
+                    if owner != generation { continue; }
+                } else if chat_routes.active.lock().expect("chat routes poisoned").contains(&frame.conversation_id) { continue; }
                 if sender.send(&pi_envelope(frame)).await.is_err() { break; }
             }
         });
@@ -1359,11 +1361,10 @@ impl Daemon {
         let (input_tx, input_rx) = mpsc::channel(8);
         let input_task = tokio::spawn(async move {
             loop {
-                let frame = match timeout(IDLE_TIMEOUT, read_frame(&mut input)).await {
-                    Ok(Ok(Some(frame))) => Ok(ReceivedControl { frame, received_at: std::time::Instant::now(), wall_ms: now_ms() }),
-                    Ok(Ok(None)) => Err(anyhow::anyhow!("peer closed the control stream")),
-                    Ok(Err(error)) => Err(error),
-                    Err(error) => Err(error.into()),
+                let frame = match crate::wire::read_ready_frame(&mut input, CONTROL_FRAME_TIMEOUT).await {
+                    Ok(Some(frame)) => Ok(ReceivedControl { frame, received_at: std::time::Instant::now(), wall_ms: now_ms() }),
+                    Ok(None) => Err(anyhow::anyhow!("peer closed the control stream")),
+                    Err(error) => Err(error),
                 };
                 let complete = frame.is_err();
                 if input_tx.send(frame).await.is_err() || complete { break; }
@@ -2290,7 +2291,16 @@ impl Daemon {
                 let id = record.id;
                 // A specific primary route can also be selected after a secondary
                 // stream reset. Fence its snapshot against frames already queued.
-                if daemon.snapshot_conversation(&record.endpoint, generation, id, target.map(|_| request.clone())).await.is_err() {
+                let token = target.map(|_| RequestId::parse(format!("primary-{}", uuid::Uuid::new_v4())).expect("generated token"));
+                let publishers = &daemon.worker.pi_frames;
+                if let Some(token) = &token {
+                    publishers.primary.lock().expect("Pi routes poisoned").insert((id, token.clone()), (generation, request.clone()));
+                }
+                let result = daemon.snapshot_conversation(&record.endpoint, generation, id, token.clone()).await;
+                if let Some(token) = token {
+                    publishers.primary.lock().expect("Pi routes poisoned").remove(&(id, token));
+                }
+                if result.is_err() {
                     let _ = sender.send(&Envelope::new(request, snapshot_error(Some(id)))).await;
                 }
             });
@@ -3418,7 +3428,7 @@ impl WorkerHost {
                                     mark_worker_failed(&healthy_reader, &phase_reader, &failure_reader, WorkerFailureCategory::InvalidWorkerEventFrame);
                                     break;
                                 }
-                                pi_frames.publish(PiPublication { frame: frame.clone(), origin });
+                                pi_frames.publish(PiPublication { frame: frame.clone(), origin, primary_generation: None }).await;
                                 continue;
                             }
                             WorkerEvent::UiRequest { conversation_id: owner_id, interaction_id, dialog } => {
@@ -3863,36 +3873,42 @@ impl WorkerHost {
 }
 
 #[derive(Clone)]
-struct PiPublication { frame: kompi_protocol::PiFrame, origin: uuid::Uuid }
+struct PiPublication { frame: kompi_protocol::PiFrame, origin: uuid::Uuid, primary_generation: Option<u64> }
 
 type PiSender = tokio::sync::broadcast::Sender<PiPublication>;
 #[derive(Clone)]
 struct PiPublishers {
     control: PiSender,
-    scoped: Arc<Mutex<HashMap<kompi_protocol::ConversationId, std::sync::Weak<PiSender>>>>,
+    scoped: Arc<Mutex<HashMap<kompi_protocol::ConversationId, mpsc::WeakSender<PiPublication>>>>,
+    primary: Arc<Mutex<HashMap<(kompi_protocol::ConversationId, RequestId), (u64, RequestId)>>>,
 }
 impl PiPublishers {
     fn new() -> Self {
-        Self { control: tokio::sync::broadcast::channel(8192).0, scoped: Default::default() }
+        Self { control: tokio::sync::broadcast::channel(8192).0, scoped: Default::default(), primary: Default::default() }
     }
-    fn conversation(&self, id: kompi_protocol::ConversationId) -> Arc<PiSender> {
+    fn conversation(&self, id: kompi_protocol::ConversationId) -> (mpsc::Sender<PiPublication>, mpsc::Receiver<PiPublication>) {
         let mut scoped = self.scoped.lock().expect("Pi publishers poisoned");
         scoped.retain(|_, sender| sender.strong_count() != 0);
-        if let Some(sender) = scoped.get(&id).and_then(std::sync::Weak::upgrade) { return sender; }
-        let sender = Arc::new(tokio::sync::broadcast::channel(128).0);
-        scoped.insert(id, Arc::downgrade(&sender));
-        sender
+        let (sender, receiver) = mpsc::channel(128);
+        scoped.insert(id, sender.downgrade());
+        (sender, receiver)
     }
-    fn publish(&self, publication: PiPublication) {
+    async fn publish(&self, mut publication: PiPublication) {
         let sender = self.scoped.lock().expect("Pi publishers poisoned")
-            .get(&publication.frame.conversation_id).and_then(std::sync::Weak::upgrade);
+            .get(&publication.frame.conversation_id).and_then(mpsc::WeakSender::upgrade);
         if matches!(publication.frame.kind, kompi_protocol::PiFrameKind::Snapshot) && publication.frame.request_id.is_some() {
             // A route-owned refresh may finish after that route detached. It never
             // crosses to primary or establishes a replacement route's barrier.
-            if let Some(sender) = sender { let _ = sender.send(publication); }
+            let route = self.primary.lock().expect("Pi routes poisoned")
+                .get(&(publication.frame.conversation_id, publication.frame.request_id.clone().expect("checked token"))).cloned();
+            if let Some((generation, request)) = route {
+                publication.primary_generation = Some(generation);
+                publication.frame.request_id = Some(request);
+                let _ = self.control.send(publication);
+            } else if let Some(sender) = sender { let _ = sender.send(publication).await; }
             return;
         }
-        if let Some(sender) = sender { let _ = sender.send(publication.clone()); }
+        if let Some(sender) = sender { let _ = sender.send(publication.clone()).await; }
         let _ = self.control.send(publication);
     }
 }
