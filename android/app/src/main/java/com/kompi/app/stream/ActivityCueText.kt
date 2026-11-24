@@ -1,6 +1,6 @@
 package com.kompi.app.stream
 
-/** Shared fixed-cue suffixes for speech, Live activity text and playback highlighting. */
+/** Default activity labels for Live display and playback highlighting. */
 internal object ActivityCueText {
     const val Thinking = "thinking it through"
     const val Tools = "checking a few things"

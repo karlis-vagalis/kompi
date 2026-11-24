@@ -5,6 +5,8 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val mediaPipeAudioVersion = "1.2.0"
+
 android {
     namespace = "com.kompi.app"
     compileSdk = 37
@@ -17,6 +19,7 @@ android {
         versionName = "0.1.2"
         buildConfigField("boolean", "PI_FRAME_COALESCING", providers.gradleProperty("piFrameCoalescing").orElse("false").map { it.toBooleanStrict().toString() }.get())
         buildConfigField("boolean", "PI_EAGER_FIRST_PARSE", providers.gradleProperty("piEagerFirstParse").orElse("true").map { it.toBooleanStrict().toString() }.get())
+        buildConfigField("String", "MEDIAPIPE_AUDIO_VERSION", "\"$mediaPipeAudioVersion\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     // Verified native inputs are already stripped; keep their exact bytes in the APK.
@@ -117,7 +120,7 @@ dependencies {
     // MediaPipe Tasks Audio provides Parakeet AudioTranscriber and Kokoro TextToSpeech.
     // Its lite protobuf runtime duplicates classes in Tink's full protobuf runtime; the newer
     // full runtime is a compatible superset for MediaPipe's lite-generated messages.
-    implementation("com.google.mediapipe:tasks-audio:1.2.0") {
+    implementation("com.google.mediapipe:tasks-audio:$mediaPipeAudioVersion") {
         exclude(group = "com.google.protobuf", module = "protobuf-javalite")
     }
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
