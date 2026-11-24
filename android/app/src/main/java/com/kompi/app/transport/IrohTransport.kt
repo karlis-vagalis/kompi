@@ -948,6 +948,9 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
                 emitIfCurrent(generation, Event.Progress(envelope.id, message.activity, message.sessionId, message.conversationId))
             }
             is V3Message.Error -> {
+                // Playback can outlive the host turn. A late stop has already reached its goal;
+                // its control request is not a failed user message.
+                if (envelope.id.startsWith("cancel-") && message.code == "not-cancellable") return
                 audit.match(envelope.id)?.let { it.record(Stage.PhoneErrorDecoded, message.conversationId); audit.finish(it) }
                 if (outbox.expectReply(envelope.id, message.conversationId, route) != null) {
                     val rejected = repository.recordPromptRejection(peerId, envelope.id, RejectionDisposition.Remove)
