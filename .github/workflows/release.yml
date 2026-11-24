@@ -27,13 +27,58 @@ jobs:
           git merge-base --is-ancestor HEAD origin/main
           cargo metadata --locked --no-deps --format-version 1 | jq -e --arg v "${GITHUB_REF_NAME#v}" '
             [.packages[] | select(.name == "kompi-daemon" or .name == "kompi-protocol") | .version] == [$v, $v]'
-  build:
+  promote:
     needs: authorize
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      promoted: ${{ steps.verify.outputs.promoted }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Find and verify exact-SHA main CI artifacts
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/promote-release-artifacts.py "$RUNNER_TEMP/promoted"
+      # Re-upload only verified files into this release run. The signing and
+      # publishing jobs never fetch directly from any other workflow run.
+      - if: steps.verify.outputs.promoted == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-apk
+          path: ${{ runner.temp }}/promoted/unsigned-apk/*
+          if-no-files-found: error
+          compression-level: 0
+      - if: steps.verify.outputs.promoted == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daemon-x86_64-unknown-linux-gnu
+          path: ${{ runner.temp }}/promoted/daemon-x86_64-unknown-linux-gnu/*
+          if-no-files-found: error
+          compression-level: 0
+      - if: steps.verify.outputs.promoted == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daemon-x86_64-pc-windows-msvc
+          path: ${{ runner.temp }}/promoted/daemon-x86_64-pc-windows-msvc/*
+          if-no-files-found: error
+          compression-level: 0
+  build:
+    needs: promote
+    if: needs.promote.outputs.promoted == 'false'
     uses: ./.github/workflows/ci.yml
     with:
       package: true
   sign:
-    needs: build
+    needs: [promote, build]
+    if: |
+      !cancelled() && needs.promote.result == 'success' &&
+      ((needs.promote.outputs.promoted == 'true' && needs.build.result == 'skipped') ||
+       (needs.promote.outputs.promoted == 'false' && needs.build.result == 'success'))
     environment: android-signing
     runs-on: ubuntu-24.04
     steps:
