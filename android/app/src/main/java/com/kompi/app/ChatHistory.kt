@@ -5,11 +5,14 @@ import com.kompi.app.transport.awaitChatSnapshot
 import com.kompi.app.transport.ConversationTarget
 import com.kompi.app.transport.PiSessionStore
 import com.kompi.app.transport.ConversationState
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.first
 
-internal class ChatHistory(val view: PiSessionStore.View, val loading: Boolean, val error: Boolean, val coveredCompletions: Set<String>, val snapshotCompletions: Set<String>, val fetching: Boolean, val checkingReply: Boolean, val canCheck: Boolean, val retry: () -> Unit)
+internal class ChatHistory(val view: PiSessionStore.View, val loading: Boolean, val error: Boolean, val snapshotCompletions: Set<String>, val fetching: Boolean, val checkingReply: Boolean, val canCheck: Boolean, val retry: () -> Unit)
 
 /** Promotion changes only whether future commands may create the runtime. The pane remains selected. */
 @Composable
@@ -29,59 +32,86 @@ internal fun rememberChatHistory(
     finishedRequests: Set<String>, activeSnapshot: suspend (ConversationTarget) -> Unit,
     archiveSnapshot: suspend (ConversationTarget) -> PiSessionStore.View, runningRequests: Set<String> = emptySet(),
     timeoutMs: Long = 45_000,
+    legacyChat: ConversationTarget? = null,
 ): ChatHistory {
+    val target = focusedChat ?: legacyChat
+    val legacy = focusedChat == null && legacyChat != null
     // Acceptance promotes the target from draft to saved without opening a different chat.
     val openedAsDraft = remember(focusedChat?.hostId, focusedChat?.id) { focusedChat?.createIfMissing == true }
-    val active = remoteState == ConversationState.Active.wire || (remoteState == null && openedAsDraft &&
+    val active = legacy || remoteState == ConversationState.Active.wire || (remoteState == null && openedAsDraft &&
         (runningRequests.isNotEmpty() || finishedRequests.isNotEmpty()))
+    val canRead = target != null && (if (legacy) finishedRequests.isNotEmpty() else
+        concurrentSupported && (active || (!target.createIfMissing && piArchiveSupported)))
     // In-memory only; keep the last two opened chats, fenced by both peer and chat.
     val recent = remember { LinkedHashMap<Pair<String, String>, PiSessionStore.View>() }
-    val scopeKey = focusedChat?.let { it.hostId to it.id }
-    var coveredCompletions by remember(scopeKey) { mutableStateOf(emptySet<String>()) }
-    var missingReply by remember(scopeKey) { mutableStateOf(false) }
+    val scopeKey = target?.let { it.hostId to it.id }
+    fun PiSessionStore.View.belongsToTarget() = hostId == target?.hostId && conversationId == target?.id
+    fun PiSessionStore.View.hasReplies(ids: Set<String>) = belongsToTarget() && !loading && canonicalReplies.containsAll(ids)
+    // A successful branch read may have no request IDs. Don't keep rechecking those
+    // historical completions when a new, linked reply arrives.
+    var checkedCompletions by remember(scopeKey) { mutableStateOf(emptySet<String>()) }
     var snapshotCompletions by remember(scopeKey) { mutableStateOf(emptySet<String>()) }
     var fetching by remember(scopeKey) { mutableStateOf(false) }
     var errorRevision by remember(scopeKey) { mutableStateOf<Long?>(null) }
-    val snapshotError = errorRevision != null && (!active || errorRevision == livePi.snapshotRevision)
-    var snapshotRetry by remember(focusedChat?.id, focusedChat?.hostId) { mutableIntStateOf(0) }
+    val uncheckedCompletions = finishedRequests - checkedCompletions
+    val snapshotError = canRead && connectionState == "Live" && errorRevision != null &&
+        (!active || (errorRevision == livePi.snapshotRevision &&
+            (uncheckedCompletions.isEmpty() || !livePi.hasReplies(uncheckedCompletions))))
+    var snapshotRetry by remember(scopeKey) { mutableIntStateOf(0) }
+    val latestRunning by rememberUpdatedState(runningRequests)
     val savedPi = key(scopeKey) {
         val view by produceState<PiSessionStore.View?>(null, active, remoteState, connectionState,
-            concurrentSupported, piArchiveSupported, snapshotRetry, finishedRequests) {
-            val target = focusedChat ?: return@produceState
+            legacy, canRead, snapshotRetry, finishedRequests) {
+            val selected = target ?: return@produceState
             errorRevision = null
-            missingReply = false
-            if (connectionState != "Live" || !concurrentSupported) return@produceState
+            if (connectionState != "Live" || !canRead) return@produceState
+            val recoveringReply = uncheckedCompletions.isNotEmpty()
             fetching = true
             try {
-                if (active) {
-                    // Ledger completion is not transcript delivery. Reconcile on entry, reconnect
-                    // and newly completed requests; only an installed snapshot ends the wait.
-                    value = awaitChatSnapshot(target, views, timeoutMs) {
-                        activeSnapshot(target)
+                // Budget one follow-up read for a completed turn, not an unbounded poll.
+                // Keep both attempts within approximately the ordinary history timeout.
+                val attempts = if (recoveringReply) 2 else 1
+                for (attempt in 1..attempts) {
+                    if (attempt > 1) delay(300)
+                    // Reply frames and Room completion travel independently. A canonical reply
+                    // may already be visible or arrive while we're waiting to try again.
+                    if (active && recoveringReply && views.value.hasReplies(uncheckedCompletions)) {
+                        checkedCompletions = finishedRequests
+                        return@produceState
                     }
-                } else if (!target.createIfMissing) {
-                    check(piArchiveSupported)
-                    value = archiveSnapshot(target)
-                }
-                // This read began after the observed terminal IDs. Render the authoritative
-                // branch, not an extra optimistic copy (archive entries need not carry request IDs).
-                value?.takeIf { it.conversationId == target.id }?.let { snapshot ->
-                    val lastUser = snapshot.lines.indexOfLast { it.fromUser }
-                    coveredCompletions = finishedRequests.intersect(snapshot.readableReplies)
-                    snapshotCompletions = finishedRequests.takeIf { lastUser >= 0 }.orEmpty()
-                    // A valid snapshot containing only the question still isn't an answer.
-                    // An unlinked archive entry is not evidence about a particular request.
-                    val trailing = snapshot.lines.getOrNull(lastUser)?.key?.takeIf { it.startsWith("user:") }?.removePrefix("user:")
-                    if (trailing in finishedRequests && runningRequests.isEmpty() &&
-                        snapshot.lines.drop(lastUser + 1).none { !it.activity && !it.fromUser && (it.body.isNotBlank() || it.artifact != null) }) {
-                        missingReply = true
+                    val snapshot = try {
+                        val readTimeout = timeoutMs / attempts
+                        if (active) awaitChatSnapshot(selected, views, readTimeout) { activeSnapshot(selected) }
+                        else kotlinx.coroutines.withTimeout(readTimeout) { archiveSnapshot(selected) }.also {
+                            check(it.conversationId == selected.id && it.hostId == selected.hostId && !it.loading)
+                        }
+                    } catch (_: TimeoutCancellationException) { null }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { null }
+                    if (snapshot == null) {
+                        if (attempt < attempts) continue
                         errorRevision = views.value.snapshotRevision
+                        return@produceState
                     }
+                    value = snapshot
+                    val lastUser = snapshot.lines.indexOfLast { it.fromUser }
+                    snapshotCompletions = finishedRequests.takeIf { lastUser >= 0 }.orEmpty()
+                    val trailing = snapshot.lines.getOrNull(lastUser)?.key?.takeIf { it.startsWith("user:") }?.removePrefix("user:")
+                    val hasPublicReply = snapshot.lines.drop(lastUser + 1).any {
+                        !it.activity && !it.fromUser && !it.streaming && (it.body.isNotBlank() || it.artifact != null)
+                    }
+                    val needsReply = recoveringReply && !snapshot.hasReplies(uncheckedCompletions) && latestRunning.isEmpty() && !hasPublicReply
+                    // With no linked turn we can retry, but can't claim an unlinked user
+                    // entry belongs to this request (it might be a newer failed turn).
+                    if (needsReply && attempt < attempts) continue
+                    if (needsReply && (trailing in uncheckedCompletions || snapshot.lines.isEmpty())) {
+                        errorRevision = snapshot.snapshotRevision.takeIf { active } ?: views.value.snapshotRevision
+                    } else if (!needsReply) {
+                        checkedCompletions = finishedRequests
+                    }
+                    return@produceState
                 }
-            } catch (cancelled: kotlinx.coroutines.TimeoutCancellationException) { errorRevision = views.value.snapshotRevision }
-            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-            catch (_: Exception) { errorRevision = views.value.snapshotRevision }
-            finally { fetching = false }
+            } finally { fetching = false }
         }
         view
     }
@@ -103,13 +133,12 @@ internal fun rememberChatHistory(
         if (!fetching && errorRevision == null) snapshotRetry++
     }
     val cached = recent[scopeKey]
-    val piSession = if (focusedChat == null) livePi else {
-        livePi.takeIf { it.conversationId == focusedChat.id && !it.loading && active }
-            ?: livePi.takeIf { it.conversationId == focusedChat.id && active && it.loading && it.lines.isNotEmpty() }
-            ?: savedPi?.takeIf { it.conversationId == focusedChat.id }
+    val piSession = if (target == null) livePi else {
+        livePi.takeIf { it.belongsToTarget() && active && (!it.loading || it.lines.isNotEmpty()) }
+            ?: savedPi?.takeIf { it.belongsToTarget() }
             ?: cached
-            ?: livePi.takeIf { it.conversationId == focusedChat.id }
-            ?: PiSessionStore.View(conversationId = focusedChat.id)
+            ?: livePi.takeIf { it.belongsToTarget() }
+            ?: PiSessionStore.View(conversationId = target.id, hostId = target.hostId)
     }
     SideEffect {
         if (scopeKey != null && !piSession.loading && cached !== piSession) {
@@ -120,5 +149,5 @@ internal fun rememberChatHistory(
     }
     return ChatHistory(piSession, !snapshotError && !openedAsDraft && focusedChat?.createIfMissing == false &&
         piSession.lines.isEmpty() && (fetching || piSession.loading) && concurrentSupported && connectionState == "Live",
-        snapshotError, coveredCompletions, snapshotCompletions, fetching, missingReply || (finishedRequests - coveredCompletions).isNotEmpty(), focusedChat != null && concurrentSupported && (active || (!focusedChat.createIfMissing && piArchiveSupported)), { snapshotRetry++ })
+        snapshotError, snapshotCompletions, fetching, uncheckedCompletions.isNotEmpty(), canRead, { snapshotRetry++ })
 }

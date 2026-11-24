@@ -21,6 +21,7 @@ import com.kompi.app.data.LocalDatabase
 import com.kompi.app.data.LocalRepository
 import com.kompi.app.protocol.generated.*
 import com.kompi.app.security.SecureStore
+import com.kompi.app.transport.ConversationTarget
 import com.kompi.app.transport.IrohTransport
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
@@ -99,39 +100,83 @@ class ChatTransportContinuityTest {
 
     @Test fun completedOfflineNeedsReadableReplyAfterReopen() = replyRecovery(firstTurn = false)
     @Test fun firstTurnCompletesWithoutLeavingNewChat() = replyRecovery(firstTurn = true)
+    @Test fun legacyCompletedTurnRecoversAfterQuestionOnlySnapshot() = replyRecovery(firstTurn = false, legacy = true)
+    @Test fun lateCompletionDoesNotReloadAlreadyVisibleReply() = replyRecovery(firstTurn = false, replyBeforeLedger = true)
 
-    private fun replyRecovery(firstTurn: Boolean) {
+    private fun replyRecovery(firstTurn: Boolean, legacy: Boolean = false, replyBeforeLedger: Boolean = false) {
         preparePeer()
-        peer.independentChats = true
-        val target = com.kompi.app.transport.ConversationTarget.saved(peer.hostId, peer.conversationId)
+        peer.independentChats = !legacy
+        if (replyBeforeLedger) peer.targetedSnapshot = """{"entries":[],"leafId":null}"""
+        val target = ConversationTarget.saved(peer.hostId, peer.conversationId)
         val id = "request-recover-once"
         var opened by mutableStateOf(true)
-        var selectedTarget by mutableStateOf(if (firstTurn) com.kompi.app.transport.ConversationTarget.draft(target.hostId, target.id) else target)
+        var selectedTarget by mutableStateOf(if (firstTurn) ConversationTarget.draft(target.hostId, target.id) else target)
         openTransport()
         compose.setContent {
             val net = transport!!
             val phase by net.state.collectAsState()
             val local by remember(net) { repository.observe(peer.hostId) }.collectAsState(LocalConversationState(emptyList(), emptyList(), null, emptyList(), null))
-            val selected = selectedTarget.takeIf { opened }
+            val concurrent by net.concurrentConversationsSupported.collectAsState()
+            val selected = selectedTarget.takeIf { opened && concurrent }
+            val legacyTarget = local.activeConversationId?.takeIf { !concurrent }?.let { ConversationTarget.saved(peer.hostId, it) }
             val recorded = local.sessions.firstOrNull { it.conversationId == target.id }
             PromoteRecordedChat(selected, recorded?.conversationId) { net.focusConversation(it); selectedTarget = it }
             LaunchedEffect(net, selected) { net.focusConversation(selected) }
             val live by net.piSession.view.collectAsState()
-            val pane = key(net) { rememberChatHistory(selected, live, net.piSession.view, if (firstTurn) recorded?.state else "active", phase, true, false,
-                local.requests.filter { it.outcome == "completed" }.map { it.requestId }.toSet(), net::requestConversationSnapshot,
-                { error("Unexpected archive read") }, timeoutMs = 2_000) }
+            val pane = key(net) { rememberChatHistory(selected, live, net.piSession.view, if (firstTurn) recorded?.state else "active", phase, concurrent, false,
+                local.requests.filter { it.conversationId == (selected ?: legacyTarget)?.id && it.outcome == "completed" }.map { it.requestId }.toSet(), net::requestConversationSnapshot,
+                { error("Unexpected archive read") }, timeoutMs = 4_000,
+                legacyChat = legacyTarget) }
             val echoes = remember(selected?.id) { LocalMessageEchoes() }.reconcile(pane.view.conversationId,
                 local.outbox.map { it.requestId to it.text }, local.requests)
             val lines = buildTranscriptProjection(pane.view, echoes, local.requests, emptyList(), outboxStates = local.outbox.associate { it.requestId to it.state }, observedWrites = net.observedWrites.collectAsState().value.keys, snapshotCompletions = pane.snapshotCompletions).active
             ChatBehaviorSurface(history = pane, connection = phase, transcript = lines,
-                onSend = { text, files -> net.sendPromptTo(checkNotNull(selected), text, files, id) })
+                onSend = { text, files -> if (legacy) net.sendPromptWithId(text, com.kompi.app.transport.Delivery.FollowUp, id)
+                    else net.sendPromptTo(checkNotNull(selected), text, files, id) })
         }
         compose.onNodeWithTag("prompt-input").performTextInput("Count the fixture cards")
         compose.onNodeWithContentDescription("Send message").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitUntil(30_000) { peer.prompts.size == 1 }
         compose.waitUntil(10_000) { compose.onAllNodes(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Accepted by your computer")).fetchSemanticsNodes().isNotEmpty() }
-        val finalHistory = """{"entries":[{"type":"message","id":"user","message":{"role":"user","content":"Count the fixture cards"}},{"type":"message","id":"answer","parentId":"user","message":{"role":"assistant","content":"There are four fixture cards."}}],"leafId":"answer"}"""
-        if (firstTurn) {
+        val userEntry = """{"type":"message","id":"user","message":{"role":"user","content":"Count the fixture cards"}}"""
+        val finalHistory = """{"entries":[$userEntry,{"type":"message","id":"answer","parentId":"user","message":{"role":"assistant","content":"There are four fixture cards."}}],"leafId":"answer"}"""
+        val reply = compose.onNodeWithText("There are four fixture cards.")
+        var readsBeforeReopen = 0
+        if (replyBeforeLedger) {
+            compose.waitUntil(10_000) { transport!!.piSession.view.value.let { it.conversationId == target.id && !it.loading } }
+            runBlocking {
+                peer.send(WireMessage.PiFrame(PiFrame(target.id, "controlled-epoch", finalHistory, "settled", true, 0, id, 2, peer.snapshotSessionId)))
+            }
+            // A completed QUIC write does not mean Android received or laid out the reply.
+            // Keep the ledger event withheld until the real, unscrolled viewport shows it.
+            compose.waitUntil(10_000) { id in transport!!.piSession.view.value.canonicalReplies }
+            awaitVisibleReply(reply)
+            readsBeforeReopen = peer.targetedReads.size
+            peer.targetedSnapshot = null // Any unnecessary recovery read would stall.
+            runBlocking {
+                peer.send(WireMessage.SyncEvents(listOf(SyncEvent("1", DurableEvent.RequestChanged(
+                    RequestChangedPayload(peer.summaries.getValue(id).copy(outcome = "completed"))))), "1"))
+            }
+            compose.waitUntil(10_000) {
+                runBlocking { repository.requestState(peer.hostId, id)?.outcome == "completed" } &&
+                    compose.onAllNodesWithContentDescription("Waiting for reply").fetchSemanticsNodes().isEmpty()
+            }
+            compose.mainClock.advanceTimeBy(5_000)
+            assertEquals(readsBeforeReopen, peer.targetedReads.size)
+        } else if (legacy) {
+            peer.snapshotConversationId = target.id
+            peer.legacyReplySnapshots += """{"entries":[$userEntry],"leafId":"user"}"""
+            peer.legacyReplySnapshots += finalHistory
+            runBlocking {
+                val metadata = ConversationMetadata(peer.configuration, target.id, "2025-01-01T00:00:00Z", "2025-01-01T00:30:00Z", 1800, peer.snapshotSessionId, state = "active")
+                peer.send(WireMessage.SyncEvents(listOf(SyncEvent("1", DurableEvent.SessionChanged(SessionChangedPayload(metadata)))), "1"))
+            }
+            compose.waitUntil(10_000) { transport!!.piSession.view.value.conversationId == target.id && !transport!!.piSession.view.value.loading }
+            runBlocking {
+                peer.send(WireMessage.SyncEvents(listOf(SyncEvent("2", DurableEvent.RequestChanged(
+                    RequestChangedPayload(peer.summaries.getValue(id).copy(outcome = "completed"))))), "2"))
+            }
+        } else if (firstTurn) {
             runBlocking {
                 val metadata = ConversationMetadata(peer.configuration, target.id, "2025-01-01T00:00:00Z", "2025-01-01T00:30:00Z", 1800, peer.snapshotSessionId, state = "active")
                 peer.send(WireMessage.SyncEvents(listOf(SyncEvent("1", DurableEvent.SessionChanged(SessionChangedPayload(metadata)))), "1"))
@@ -152,6 +197,7 @@ class ChatTransportContinuityTest {
             runBlocking { transport!!.closeAndJoin() }
             peer.summaries[id] = peer.summaries.getValue(id).copy(outcome = "completed")
             openTransport()
+            readsBeforeReopen = peer.targetedReads.size
             compose.runOnIdle { opened = true }
             compose.onNodeWithText("Loading conversation…").assertIsDisplayed()
             compose.onNodeWithContentDescription("Waiting for reply").assertDoesNotExist()
@@ -161,21 +207,37 @@ class ChatTransportContinuityTest {
                 peer.send(WireMessage.PiFrame(PiFrame(target.id, "controlled-epoch", finalHistory.replace("four fixture cards", "obsolete cards"),
                     "snapshot", true, 0, "stale-read", 0, peer.snapshotSessionId)))
             }
-            compose.waitUntil(10_000) { compose.onAllNodesWithText("Couldn’t load the reply.").fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(2_000) { peer.targetedReads.size == readsBeforeReopen + 1 }
             compose.onNodeWithText("There are obsolete cards.").assertDoesNotExist()
-            compose.onNodeWithText("Loading conversation…").assertDoesNotExist()
+            compose.onNodeWithText("Couldn’t load the reply.").assertDoesNotExist()
             peer.targetedSnapshot = finalHistory
-            compose.onNodeWithText("Check for reply").performClick()
         }
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("There are four fixture cards.").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("There are four fixture cards.").assertIsDisplayed()
+        awaitVisibleReply(reply)
         compose.onAllNodesWithText("There are four fixture cards.").assertCountEquals(1)
         compose.onNodeWithText("Loading conversation…").assertDoesNotExist()
         compose.onAllNodesWithText("Count the fixture cards").assertCountEquals(1)
         compose.onNodeWithText("Count the fixture cards").assertIsDisplayed()
         assertEquals(listOf(id), peer.prompts.map { it.id })
-        assertEquals(setOf(target.id), peer.targetedReads.toSet())
+        compose.onNodeWithText("Couldn’t load the reply.").assertDoesNotExist()
+        compose.onNodeWithText("Check for reply").assertDoesNotExist()
+        if (legacy) {
+            assertEquals(2, peer.legacyReplyReads.size)
+            assertTrue(peer.targetedReads.isEmpty())
+        } else {
+            assertEquals(setOf(target.id), peer.targetedReads.toSet())
+            if (!firstTurn && !replyBeforeLedger) assertEquals(readsBeforeReopen + 2, peer.targetedReads.size)
+        }
         assertEquals(0, peer.modelRequests.get())
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    private fun awaitVisibleReply(reply: SemanticsNodeInteraction) {
+        // Compose idleness does not cover QUIC or IME animation. Check visibility on
+        // the layout owner, without scrolling the list or dismissing the keyboard.
+        compose.waitUntil(10_000) {
+            compose.runOnIdle { compose.runWithoutImplicitWait { reply.isDisplayed() } }
+        }
+        reply.assertDisplayedOnOwnerThread()
     }
 
     private fun runJourney(loseAcceptance: Boolean) {

@@ -51,7 +51,8 @@ class PiSessionStore(
     }
     data class View(val sessionId: String? = null, val conversationId: String? = null, val leafId: String? = null,
         val lines: List<Line> = emptyList(), val loading: Boolean = true, val representedRequests: Set<String> = emptySet(),
-        val sessionName: String? = null, val snapshotRevision: Long = 0, val hostId: String? = null, val readableReplies: Set<String> = emptySet())
+        val sessionName: String? = null, val snapshotRevision: Long = 0, val hostId: String? = null, val readableReplies: Set<String> = emptySet(),
+        val canonicalReplies: Set<String> = emptySet())
     private data class Entry(val id: String, val parentId: String?, val raw: JSONObject, val details: Details)
     private data class Record(val frame: PiFrame, val value: JSONObject, val connection: String?, val origin: Origin, val receivedMs: Long)
     private data class UpdateWindow(val request: String, val conversation: String, val epoch: String,
@@ -623,6 +624,7 @@ class PiSessionStore(
         val lines = chain.asReversed().flatMap { entry -> rows(entry).also { rendered ->
             if (rendered.any { !it.fromUser && !it.activity && it.text.isNotBlank() }) answerRequests[entry.id]?.let(readableReplies::add)
         } }.toMutableList()
+        val canonicalReplies = readableReplies.toSet()
         active?.let { live ->
             val message = live.message()
             if (live.origin == LiveOrigin.ResumedSuffix) lines.add(Line(
@@ -633,6 +635,6 @@ class PiSessionStore(
             if (rendered.any { !it.activity && it.text.isNotBlank() }) live.requestId?.let(readableReplies::add)
             lines.addAll(rendered)
         }
-        _view.value = View(session, conversation, leaf, compactToolCalls(lines), waiting, represented.toSet(), sessionName, snapshotRevision, hostId, readableReplies.toSet())
+        _view.value = View(session, conversation, leaf, compactToolCalls(lines), waiting, represented.toSet(), sessionName, snapshotRevision, hostId, readableReplies.toSet(), canonicalReplies)
     }
 }
