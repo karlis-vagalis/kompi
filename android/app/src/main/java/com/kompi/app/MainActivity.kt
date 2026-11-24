@@ -535,13 +535,15 @@ private fun KompiApp(
     val livePi = receivedPi.takeIf { it.hostId == selectedMachineKey } ?: com.kompi.app.transport.PiSessionStore.View()
     val catalogSession = remember(hostHistory, displayedId) { hostHistory?.firstOrNull { it.conversationId == displayedId } }
     val remoteState = displayedSession?.state ?: catalogSession?.state?.wire
-    val finishedRequests = remember(displayedRequests, selectedMachineKey) {
-        displayedRequests.filter { it.hostId == selectedMachineKey && it.outcome == "completed" }.map { it.requestId }.toSet()
-    }
+    val legacyChat = displayedId?.takeIf { focusedChat == null && !concurrentSupported && selectedMachineKey.isNotEmpty() }
+        ?.let { ConversationTarget.saved(selectedMachineKey, it) }
+    val historyRequests = displayedRequests.filter { it.hostId == selectedMachineKey && it.conversationId == displayedId }
+    val finishedRequests = historyRequests.filter { it.outcome == "completed" }.map { it.requestId }.toSet()
     val historyPane = rememberChatHistory(focusedChat, livePi, transport.piSession.view, remoteState, connectionState,
         concurrentSupported, piArchiveSupported, finishedRequests, transport::requestConversationSnapshot,
         { transport.loadArchivedChat(it.hostId, it.id) },
-        displayedRequests.filter { it.hostId == selectedMachineKey && it.outcome in setOf("accepted", "running") }.map { it.requestId }.toSet())
+        historyRequests.filter { it.outcome in setOf("accepted", "running") }.map { it.requestId }.toSet(),
+        legacyChat = legacyChat)
     val piSession = historyPane.view
     val deliveryNotices by localViewModel.notices.collectAsState()
     val pendingPiPrompts = remember(scopedOutbox, localRepository, selectedMachineKey) {
@@ -1916,6 +1918,8 @@ internal fun ConversationScreen(
     var dictationPartial by remember { mutableStateOf<com.kompi.app.audio.OfflineTranscript?>(null) }
     var dictationOverflow by remember { mutableStateOf(false) }
     var voiceMessage by remember { mutableStateOf("") }
+    var showLiveUnavailable by remember { mutableStateOf(false) }
+    LaunchedEffect(canStartLive) { if (canStartLive) showLiveUnavailable = false }
     LaunchedEffect(attachmentDraftScope, attachmentShareReceipt, pendingAttachmentIds) {
         attachmentShareReceipt.collectLatest { receipt ->
             val available = withContext(Dispatchers.IO) {
@@ -2158,7 +2162,7 @@ internal fun ConversationScreen(
             draftAttachments.isNotEmpty() -> voiceMessage = "Send or remove selected files before starting Live voice."
             speechModel == null -> onOpenVoiceSettings()
             speechModel?.engine?.supportedOnDevice() != true -> voiceMessage = "The selected speech engine is not supported on this device."
-            !canStartLive -> voiceMessage = "Connect to a computer before starting Live voice."
+            !canStartLive -> showLiveUnavailable = true
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED -> sendScope.launch { startLiveAfterCaptureHandoff() }
             else -> { pendingCapture = CaptureMode.Live; micPermission.launch(Manifest.permission.RECORD_AUDIO) }
         }
@@ -2357,8 +2361,9 @@ internal fun ConversationScreen(
                             onStopReadAloud = onStopReadAloud,
                             onOpenVoiceSettings = onOpenVoiceSettings,
                         )
-                        if (line.deliveryStatus == OutgoingMessageStatus.Uncertain || (line.deliveryStatus == OutgoingMessageStatus.Dispatching && connectionState != "Live"))
-                            TextButton(onClick = onRetryHistory, enabled = connectionState == "Live" && canCheckHistory) { Text("Check conversation") }
+                        line.deliveryStatus?.recoveryText(connectionState)?.let { status ->
+                            Text(status, style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
+                        }
                         visibleUnsentPrompts.firstOrNull { line.key == "user:${it.id}" }?.let { prompt ->
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                                 TextButton(onClick = { sendScope.launch { onDiscardPrompt(prompt.id) } }, enabled = submittingRevisions.isEmpty()) { Text("Discard") }
@@ -2376,7 +2381,14 @@ internal fun ConversationScreen(
                     Text("${draftAttachments.size} ${if (draftAttachments.size == 1) "attachment" else "attachments"} · Live voice paused", style = KompiUi.typography.labelSmall, color = KompiUi.colors.onSurfaceVariant)
                 }
                 if (importingAttachments || importingSharedAttachments) Text("Adding attachments…", style = KompiUi.typography.labelSmall, color = KompiUi.colors.onSurfaceVariant)
-                if (voiceMessage.isNotBlank()) Text(voiceMessage, style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant, maxLines = 2)
+                if (showLiveUnavailable && !canStartLive) Text(
+                    when {
+                        !canSend -> "Select a computer to start Live voice."
+                        connectionState == "Synchronizing" -> "Live voice is waiting for sync."
+                        connectionState != "Live" -> "Live voice is waiting for a connection."
+                        else -> "Live voice is unavailable right now."
+                    }, style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant,
+                ) else if (voiceMessage.isNotBlank()) Text(voiceMessage, style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant, maxLines = 2)
                 if (speechMessage.isNotBlank()) Text(speechMessage, style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant, maxLines = 2)
                 visibleUnsentPrompts.filter { prompt -> visibleTranscript.none { it.key == "user:${prompt.id}" } }.take(3).forEach { prompt ->
                     PendingPromptNotice(

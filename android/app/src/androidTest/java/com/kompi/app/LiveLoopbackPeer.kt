@@ -35,6 +35,8 @@ internal class LiveLoopbackPeer private constructor(private val endpoint: Endpoi
     val errors = CopyOnWriteArrayList<Throwable>()
     val modelRequests = java.util.concurrent.atomic.AtomicInteger()
     val targetedReads = CopyOnWriteArrayList<String>()
+    val legacyReplyReads = CopyOnWriteArrayList<String>()
+    val legacyReplySnapshots = java.util.concurrent.ConcurrentLinkedQueue<String>()
     @Volatile var independentChats = false
     @Volatile var targetedSnapshot: String? = null
     @Volatile var acknowledgePrompts = true
@@ -96,10 +98,15 @@ internal class LiveLoopbackPeer private constructor(private val endpoint: Endpoi
                                 }
                                 WireMessage.PiSnapshotGet -> {
                                     val owner = snapshotConversationId
-                                    val snapshot = if (owner == null) WireMessage.PiSessionEmpty else WireMessage.PiFrame(PiFrame(
-                                        conversationId = owner, epoch = "controlled-$owner", json = "{\"entries\":[],\"leafId\":null}",
-                                        kind = "snapshot", last = true, part = 0, sequence = 0, sessionId = snapshotSessionId))
-                                    send(EnvelopeV3(id = envelope.id, message = snapshot))
+                                    val recovery = envelope.id.startsWith("legacy-reply-snapshot-")
+                                    val json = if (recovery) legacyReplySnapshots.poll() else "{\"entries\":[],\"leafId\":null}"
+                                    if (recovery) legacyReplyReads += envelope.id
+                                    if (json != null) {
+                                        val snapshot = if (owner == null) WireMessage.PiSessionEmpty else WireMessage.PiFrame(PiFrame(
+                                            conversationId = owner, epoch = "controlled-$owner", json = json,
+                                            kind = "snapshot", last = true, part = 0, sequence = if (recovery) legacyReplyReads.size.toLong() else 0, sessionId = snapshotSessionId))
+                                        send(EnvelopeV3(id = envelope.id, message = snapshot))
+                                    }
                                 }
                                 is WireMessage.SettingsUpdate -> send(EnvelopeV3(id = envelope.id, message = WireMessage.SettingsConfirmed(message.settings, message.updateId)))
                                 is WireMessage.Prompt -> {

@@ -197,6 +197,14 @@ enum class OutgoingMessageStatus(val icon: Int) {
     Uploading(LucideR.drawable.lucide_ic_clock_3), Sent(LucideR.drawable.lucide_ic_check),
     LocalFailure(LucideR.drawable.lucide_ic_circle_alert), Failed(LucideR.drawable.lucide_ic_circle_alert), Uncertain(LucideR.drawable.lucide_ic_circle_question_mark);
 
+    fun recoveryText(connectionState: String): String? = when {
+        this !in setOf(Sending, Dispatching, Uncertain) -> null
+        connectionState == "Synchronizing" -> "Saved on this phone · syncing with your computer"
+        connectionState != "Live" -> "Saved on this phone · waiting for connection"
+        this == Uncertain -> "Waiting for your computer to confirm delivery"
+        else -> null
+    }
+
     fun label(connected: Boolean): String = when (this) {
         Sending -> if (connected) "Sending" else "Waiting for connection"
         Dispatching -> if (connected) "Sending" else "Delivery not confirmed"

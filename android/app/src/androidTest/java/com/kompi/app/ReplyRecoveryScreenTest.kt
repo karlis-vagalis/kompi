@@ -44,7 +44,7 @@ class ReplyRecoveryScreenTest {
 
     @Test fun completedButQuestionOnlySnapshotOffersReadOnlyCheck() {
         val target = ConversationTarget.saved("host-a", "00000000-0000-4000-8000-000000000001")
-        var view by mutableStateOf(PiSessionStore.View(conversationId = target.id, loading = false,
+        var view by mutableStateOf(PiSessionStore.View(conversationId = target.id, hostId = target.hostId, loading = false,
             lines = listOf(PiSessionStore.Line("user:finished", "Is the kiln ready?", true))))
         val views = kotlinx.coroutines.flow.MutableStateFlow(view)
         var reads = 0
@@ -56,15 +56,15 @@ class ReplyRecoveryScreenTest {
                 onSend = { _, _ -> error("Read-only recovery must not send") })
         }
         compose.onNodeWithText("Is the kiln ready?").assertIsDisplayed()
-        compose.onNodeWithText("Couldn’t load the reply.").assertIsDisplayed()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Couldn’t load the reply.").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Check for reply").performClick()
+        compose.waitUntil(5_000) { reads == 4 }
         compose.runOnIdle {
-            assertEquals(2, reads)
             // A newer failed turn without text is not a missing reply for an older completion.
             view = view.copy(lines = view.lines + PiSessionStore.Line("user:failed", "Later question", true))
             completions = setOf("finished", "older")
         }
-        compose.waitUntil { reads == 3 }
+        compose.waitUntil(5_000) { reads == 6 }
         compose.onNodeWithText("Couldn’t load the reply.").assertDoesNotExist()
         // Old archive text must not erase a different completed prompt absent from that read.
         val repeated = buildTranscriptProjection(view.copy(lines = listOf(PiSessionStore.Line("old-entry", "Continue", true))),

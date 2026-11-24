@@ -636,7 +636,8 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
                                         historyReplies[envelope.id]?.complete(message)
                                         continue
                                     }
-                                    if (envelope.id.startsWith("selected-snapshot-")) continue
+                                    if (envelope.id.startsWith("selected-snapshot-") ||
+                                        envelope.id.startsWith("legacy-reply-snapshot-")) continue
                                     if (envelope.id.startsWith("scoped-snapshot-")) {
                                         outbox.chatStreams.snapshotFailed(null, envelope.id)
                                         continue
@@ -1214,12 +1215,20 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
     }
 
     internal suspend fun requestConversationSnapshot(target: ConversationTarget) {
-        val connection = synchronized(lifecycleLock) {
-            if (!ready || !_concurrentConversationsSupported.value || requestedPairing?.machineId != target.hostId ||
-                focusedChat?.id != target.id) return
-            outboxConnection ?: return
+        val (connection, concurrent) = synchronized(lifecycleLock) {
+            check(ready && _state.value == "Live" && requestedPairing?.machineId == target.hostId)
+            val concurrent = _concurrentConversationsSupported.value
+            check(if (concurrent) focusedChat?.let { it.hostId == target.hostId && it.id == target.id } == true
+                else focusedChat == null && piSession.currentConversationId() == target.id)
+            checkNotNull(outboxConnection) to concurrent
         }
-        connection.chatStreams.requestSnapshot(target.id, afterPending = true)
+        if (concurrent) {
+            connection.chatStreams.requestSnapshot(target.id, afterPending = true)
+        } else {
+            // Legacy peers only expose an unscoped read. Keep consuming ordinary events
+            // on the current base and require a newer snapshot for this same chat.
+            connection.send(id("legacy-reply-snapshot"), V3Message.PiSnapshotGet)
+        }
     }
 
     /** A saved snapshot can populate a writable pane without starting a runtime. */

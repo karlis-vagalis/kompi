@@ -106,7 +106,10 @@ class ChatMessageContinuityTest {
         mount()
         compose.runOnIdle { dispatch = "dispatching"; connection = "Disconnected" }
         assertOneBubble("Delivery not confirmed")
-        compose.onNodeWithText("Check conversation").assertIsNotEnabled()
+        compose.onNodeWithText("Check conversation").assertDoesNotExist()
+        compose.onNodeWithText("Saved on this phone · waiting for connection").assertIsDisplayed()
+        compose.runOnIdle { connection = "Synchronizing" }
+        compose.onNodeWithText("Saved on this phone · syncing with your computer").assertIsDisplayed()
         compose.onNodeWithText("Discard").assertDoesNotExist()
         compose.onNodeWithText("Review draft").assertDoesNotExist()
         for ((outcome, label) in listOf("failed" to "Accepted by your computer", "uncertain" to "Accepted by your computer", "host-cancelled" to "Accepted by your computer", "rejected" to "Message not accepted", "local-failure" to "Couldn’t send message")) {
