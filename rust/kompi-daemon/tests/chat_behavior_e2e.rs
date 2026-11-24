@@ -353,6 +353,39 @@ impl Drop for Harness {
 }
 
 #[tokio::test]
+async fn discovery_is_explicit_and_does_not_reopen_phone_session() -> Result<()> {
+    let mut h = Harness::new().await?;
+    let stages = h.root.join("home").join("worker-stages");
+    let cold = std::time::Instant::now();
+    h.phone.send("cold", prompt("Fixture question")).await?;
+    h.phone.accepted("cold").await?;
+    let mut w = h.worker().await?;
+    w.started("cold").await?;
+    eprintln!("fixture cold dispatch: {}ms", cold.elapsed().as_millis());
+    w.command("release", "cold").await?;
+    h.phone.completed("cold").await?;
+    h.reconnect().await?;
+    let warm = std::time::Instant::now();
+    h.phone.send("idle", prompt("Next fixture question")).await?;
+    h.phone.accepted("idle").await?;
+    w.started("idle").await?;
+    eprintln!("fixture idle dispatch: {}ms", warm.elapsed().as_millis());
+    w.command("release", "idle").await?;
+    h.phone.completed("idle").await?;
+    let counts = || std::fs::read_to_string(&stages).unwrap();
+    assert_eq!(counts().lines().filter(|s| *s == "models-get").count(), 0);
+    assert_eq!(counts().lines().filter(|s| *s == "create" || *s == "resume").count(), 1);
+    for id in ["selector", "overlap"] { h.phone.send(id, Message::ModelsGet {}).await?; }
+    for id in ["selector", "overlap"] {
+        h.phone.wait(|e| e.id.as_str() == id && matches!(e.message, Message::ModelsResult { .. })).await?;
+    }
+    h.phone.send("refresh", Message::ModelsGet {}).await?;
+    h.phone.wait(|e| e.id.as_str() == "refresh" && matches!(e.message, Message::ModelsResult { .. })).await?;
+    assert_eq!(counts().lines().filter(|s| *s == "models-get").count(), 2);
+    h.stop().await
+}
+
+#[tokio::test]
 async fn q2_q4_x3_fifo_cancel_middle_and_late_cancel_cannot_stop_next_request() -> Result<()> {
     timeout(Duration::from_secs(60), async {
         let mut h = Harness::new().await?;

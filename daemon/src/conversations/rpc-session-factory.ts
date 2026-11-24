@@ -91,6 +91,11 @@ async function prepareInput(text: string, attachments: readonly PromptAttachment
 
 function wrap(runtime: Runtime, state: Awaited<ReturnType<PiRpcClient["getState"]>>, abort: () => Promise<void>, dispose: () => Promise<void>, onBoundary?: (boundary: FollowUpBoundary) => void): ConversationSession {
   const { client } = runtime;
+  let previous: ChatConfiguration | undefined;
+  const select = async (selection: ChatConfiguration) => {
+    await applyModel(client, selection, previous);
+    previous = selection;
+  };
   const sessionName = state.sessionName ?? "Kompi";
   return {
     sessionId: state.sessionId,
@@ -99,7 +104,7 @@ function wrap(runtime: Runtime, state: Awaited<ReturnType<PiRpcClient["getState"
     epoch: client.epoch,
     snapshot: (since, publish) => client.getEntries(since, publish),
     prompt: async (text, configuration, attachments = []) => {
-      await applyModel(client, configuration);
+      await select(configuration);
       let started = 0;
       let firstTextMs: number | null = null;
       let totalMs = 0;
@@ -148,7 +153,7 @@ function wrap(runtime: Runtime, state: Awaited<ReturnType<PiRpcClient["getState"
           enqueue: async (nextText, nextConfiguration, nextAttachments) => {
             const input = await prepareInput(nextText, nextAttachments).catch(() => { throw new FollowUpRejected(); });
             if (!selected) {
-              await applyModel(client, nextConfiguration).catch(() => { throw new FollowUpRejected(); });
+              await select(nextConfiguration);
               selected = nextConfiguration;
             }
             const result = await client.request({ type: "follow_up", ...input }).catch((error) => {

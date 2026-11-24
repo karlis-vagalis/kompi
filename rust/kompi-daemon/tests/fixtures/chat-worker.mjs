@@ -1,5 +1,7 @@
 // Deterministic remote execution boundary for the real daemon E2E tests.
 // No model, workspace commands, credentials or Pi settings are accessed.
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
 import { createConnection } from "node:net";
 import { createInterface } from "node:readline";
 
@@ -30,9 +32,10 @@ function connectControl() {
 
 createInterface({ input: process.stdin }).on("line", (line) => {
   const { id, message: { type, payload } } = JSON.parse(line);
+  appendFileSync(join(process.env.HOME, "worker-stages"), type + "\n");
   switch (type) {
     case "models-get":
-      emit(id, "models-result", { catalog: { models: [{ provider: "fixture", modelId: "controlled", name: "Controlled fixture", efforts: ["high"] }], defaultConfiguration: { provider: "fixture", modelId: "controlled", effort: "high" } } });
+      setTimeout(() => emit(id, "models-result", { catalog: { models: [{ provider: "fixture", modelId: "controlled", name: "Controlled fixture", efforts: ["high"] }], defaultConfiguration: { provider: "fixture", modelId: "controlled", effort: "high" } } }), 100);
       break;
     case "create":
       connectControl();

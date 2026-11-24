@@ -9,7 +9,7 @@ import { conversationId } from "./conversations/domain.ts";
 import { PiRpcSessionFactory, ModelRequestError, PromptAborted, FollowUpRejected, type ConversationSession, type FollowUpBoundary } from "./conversations/rpc-session-factory.ts";
 import { PiTranscriptOwnedError } from "./conversations/pi-rpc-client.ts";
 
-import { discoverModels } from "./conversations/model-selection.ts";
+import { discoverModels, ModelSelectionError } from "./conversations/model-selection.ts";
 
 // The operator extension consumes this established environment flag to avoid
 // recursively attaching Kompi inside its own Pi CLI subprocess.
@@ -495,7 +495,9 @@ async function handleRequest(envelope: ReturnType<typeof parseWorkerRequest>): P
           conversationId: payload.conversationId,
         } });
       } catch (error) {
-        if (error instanceof ModelRequestError) {
+        if (error instanceof ModelSelectionError) {
+          emitError(id, "model-configuration-unavailable", live.active.requestId, payload.conversationId);
+        } else if (error instanceof ModelRequestError) {
           reportFailure("prompt", "prompt-failed", error);
           emitError(id, error.code, live.active.requestId, payload.conversationId, error.message);
         } else if (error instanceof PromptAborted) {
@@ -518,7 +520,8 @@ async function handleRequest(envelope: ReturnType<typeof parseWorkerRequest>): P
         if (queued) boundary.queued.push(payload.requestId);
         send(id, { type: "follow-up-added", payload: { queued } });
       } catch (error) {
-        if (error instanceof FollowUpRejected) emitError(id, "prompt-failed", payload.requestId, payload.conversationId);
+        if (error instanceof ModelSelectionError) emitError(id, "model-configuration-unavailable", payload.requestId, payload.conversationId);
+        else if (error instanceof FollowUpRejected) emitError(id, "prompt-failed", payload.requestId, payload.conversationId);
         else failClosed("follow-up-transfer-failed");
       }
       return;

@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { z } from "zod";
 import { VERSION, parseWorkerEvent, type WorkerRequest, type WorkerEvent } from "../../../pi-extension/src/protocol/generated.ts";
-import { PiRpcClient } from "./pi-rpc-client.ts";
+import { PiRpcClient, PiRpcCommandError } from "./pi-rpc-client.ts";
 
 export type ChatConfiguration = Extract<WorkerRequest, { type: "prompt" }>["payload"]["configuration"];
 export type ModelCatalog = Extract<WorkerEvent, { type: "models-result" }>["payload"]["catalog"];
@@ -32,19 +32,21 @@ export async function discoverModels(): Promise<ModelCatalog> {
   } finally { await client.stop(); }
 }
 
-/** Apply only to this idle RPC session; Pi's RPC setters do not persist global defaults. */
-export async function applyModel(client: PiRpcClient, configuration: ChatConfiguration): Promise<void> {
-  const { models } = availableModels.parse(await client.request({ type: "get_available_models" }));
-  if (!models.some((model) => model.provider === configuration.provider && model.id === configuration.modelId)) {
-    throw new Error("The selected model is no longer available");
-  }
-  await client.request({ type: "set_model", provider: configuration.provider, modelId: configuration.modelId });
-  const { levels } = thinkingLevels.parse(await client.request({ type: "get_available_thinking_levels" }));
-  if (!levels.includes(configuration.effort)) throw new Error("The selected model does not support that effort");
-  await client.request({ type: "set_thinking_level", level: configuration.effort });
-  const state = z.object({ model: z.object({ provider: z.string(), id: z.string() }), thinkingLevel: z.string() })
+export class ModelSelectionError extends Error {}
+
+/** set_model itself resolves the exact ID against Pi's available snapshot. Never
+ * launch discovery, choose a fallback, or assume a previous session's state. */
+export async function applyModel(client: Pick<PiRpcClient, "request">, configuration: ChatConfiguration, previous?: ChatConfiguration): Promise<void> {
+  const readSelection = async () => z.object({ model: z.object({ provider: z.string(), id: z.string() }).optional(), thinkingLevel: z.string() })
     .parse(await client.request({ type: "get_state" }));
-  if (state.model.provider !== configuration.provider || state.model.id !== configuration.modelId || state.thinkingLevel !== configuration.effort) {
-    throw new Error("Pi did not apply the requested model configuration");
-  }
+  const matches = (state: Awaited<ReturnType<typeof readSelection>>) => state.model?.provider === configuration.provider &&
+    state.model.id === configuration.modelId && state.thinkingLevel === configuration.effort;
+  if (previous?.provider === configuration.provider && previous.modelId === configuration.modelId && previous.effort === configuration.effort &&
+      matches(await readSelection())) return;
+  await client.request({ type: "set_model", provider: configuration.provider, modelId: configuration.modelId }).catch((error) => {
+    if (error instanceof PiRpcCommandError) throw new ModelSelectionError();
+    throw error;
+  });
+  await client.request({ type: "set_thinking_level", level: configuration.effort });
+  if (!matches(await readSelection())) throw new ModelSelectionError();
 }

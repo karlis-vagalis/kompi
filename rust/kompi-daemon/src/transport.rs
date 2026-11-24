@@ -184,8 +184,6 @@ struct AcceptedPrompt {
 #[derive(Clone, Copy)]
 enum PhoneCompletion { Completed, Cancelled, Uncertain, Failed }
 
-enum PhoneTurnSettlement { Replied, NoReply }
-
 struct PromptInput {
     text: String,
     delivery: kompi_protocol::Delivery,
@@ -2259,12 +2257,14 @@ impl Daemon {
     }
 
     async fn prepare_worker(&self, row: &crate::store::ConversationRecord, phone_label: &str) -> Result<WorkerSession> {
+        let started = std::time::Instant::now();
         let authorization = self.runtime_authorization(&row.endpoint);
         let worker = {
             let _authorization = authorization.read().await;
             anyhow::ensure!(self.sqlite.device(&row.endpoint).await?.is_some(), "phone is no longer paired");
             self.worker.process_for(row.id, &row.endpoint).await?
         };
+        preparation_timing("authorized-worker-acquired", started);
         worker.prepare(row.id, row.session_id.as_deref(), &row.session_file, phone_label, wire_timestamp(row.created_at)?).await
     }
 
@@ -2427,25 +2427,7 @@ impl Daemon {
         if self.replay_prompt(&connection, &peer_key, &request_key, &id, &fingerprint, &configuration, trace.clone()).await? {
             return Ok(());
         }
-        let catalog = match self.worker.models().await {
-            Ok(catalog) => catalog,
-            Err(_) => {
-                timing(&trace, Timing::DaemonRejected);
-                connection.send(&Envelope::new(id.clone(), Message::PreacceptanceRejected {
-                    request_id: id, code: "models-unavailable".into(), message: "Pi's model registry is temporarily unavailable. Retry when the computer is ready.".into(), retryable: true,
-                })).await?;
-                return Ok(());
-            }
-        };
-        timing(&trace, Timing::DaemonCatalogReady);
-        if !catalog.models.iter().any(|model| model.provider == configuration.provider && model.model_id == configuration.model_id && model.efforts.contains(&configuration.effort)) {
-            timing(&trace, Timing::DaemonRejected);
-            connection.send(&Envelope::new(id.clone(), Message::PreacceptanceRejected {
-                request_id: id, code: "model-configuration-unavailable".into(),
-                message: "The selected model or effort is no longer available. Choose a configured model and resend.".into(), retryable: false,
-            })).await?;
-            return Ok(());
-        }
+        // The live Pi session applies the persisted selection; discovery is selector-only.
         match crate::resource_admission::check(self.sqlite.state_directory()) {
             Ok(()) => {}
             Err(crate::resource_admission::AdmissionError::Pressure) => {
@@ -2697,13 +2679,9 @@ impl Daemon {
         let project = prompt.conversation.project.clone();
         loop {
             let conversation = prompt.conversation.id;
-            let settlement = match self.run_phone_turn(peer, owner, lane, prompt).await {
-                Ok(settlement) => settlement,
-                Err(error) => {
-                    eprintln!("Kompi could not finalize phone work: {}", safe_error(&error.to_string()));
-                    PhoneTurnSettlement::NoReply
-                }
-            };
+            if let Err(error) = self.run_phone_turn(peer, owner, lane, prompt).await {
+                eprintln!("Kompi could not finalize phone work: {}", safe_error(&error.to_string()));
+            }
             let _admission = lane.admission.lock().await;
             let next = lane.pending.lock().expect("prompt lane poisoned").pop_front();
             if let Some(next) = next {
@@ -2722,11 +2700,6 @@ impl Daemon {
                     self.expire_conversation(row, lane, now_ms()).await?;
                 }
             }
-            // The final group is durable and the lane has no pending work.
-            // Intermediate follow-up checkpoints must never trigger discovery.
-            if matches!(settlement, PhoneTurnSettlement::Replied) {
-                self.worker.prefetch_catalog(self.sqlite.state_directory());
-            }
             drop(execution);
             return Ok(());
         }
@@ -2738,7 +2711,7 @@ impl Daemon {
         owner: &PhoneSessionOwner,
         lane: &PromptLane,
         prompt: AcceptedPrompt,
-    ) -> Result<PhoneTurnSettlement> {
+    ) -> Result<()> {
         let conversation = prompt.conversation.id;
         let generation = prompt.generation;
         let endpoint = prompt.conversation.endpoint.clone();
@@ -2855,9 +2828,9 @@ impl Daemon {
                                 WorkerEvent::FollowUpAdded { queued: false } => {
                                     self.complete_phone_prompt(peer, owner, staged.pop().unwrap(), PhoneCompletion::Completed, None).await?;
                                 }
-                                WorkerEvent::Error { .. } => {
+                                WorkerEvent::Error { code, .. } => {
                                     timing(&candidate.trace, Timing::DaemonWorkerFailed);
-                                    self.complete_phone_prompt(peer, owner, staged.pop().unwrap(), PhoneCompletion::Failed, Some(public_prompt_failure("prompt-failed"))).await?;
+                                    self.complete_phone_prompt(peer, owner, staged.pop().unwrap(), PhoneCompletion::Failed, Some(public_prompt_failure(&code))).await?;
                                 }
                                 _ => bail!("unexpected Pi follow-up response"),
                             }
@@ -2886,19 +2859,11 @@ impl Daemon {
         self.worker.remove_pending(conversation, route.as_str()).await;
         match outcome {
             Ok(Some(stats)) => {
-                let settlement = if stats.assistant_messages > 0
-                    && matches!(owner.is_cancelled(group[0].id.clone()).await, Ok(false))
-                {
-                    PhoneTurnSettlement::Replied
-                } else {
-                    PhoneTurnSettlement::NoReply
-                };
-                self.finish_phone_group(peer, owner, group, stats).await?;
-                Ok(settlement)
+                self.finish_phone_group(peer, owner, group, stats).await
             }
             Ok(None) => {
                 self.complete_phone_prompt(peer, owner, group.remove(0), PhoneCompletion::Cancelled, None).await?;
-                Ok(PhoneTurnSettlement::NoReply)
+                Ok(())
             }
             Err(error) => {
                 for member in group.iter().chain(staged.iter()) {
@@ -2940,7 +2905,7 @@ impl Daemon {
                 for member in unstarted {
                     self.complete_phone_prompt(peer, owner, member, PhoneCompletion::Failed, Some(public_prompt_failure("prompt-failed"))).await?;
                 }
-                Ok(PhoneTurnSettlement::NoReply)
+                Ok(())
             }
         }
     }
@@ -3647,7 +3612,9 @@ impl WorkerHost {
         phone_label: &str,
         created_at: kompi_protocol::Timestamp,
     ) -> Result<WorkerSession> {
+        let waiting = std::time::Instant::now();
         let _opening = self.open_gate.lock().await;
+        preparation_timing("open-gate", waiting);
         if let Some(session) = self
             .known_sessions
             .lock()
@@ -3657,6 +3624,7 @@ impl WorkerHost {
         {
             return Ok(session);
         }
+        let opening = std::time::Instant::now();
         let operation_id = RequestId::parse(format!("worker-open-{}", uuid::Uuid::new_v4()))?;
         let (tx, mut rx) = mpsc::channel(8);
         self.pending.lock().await.insert(
@@ -3724,6 +3692,7 @@ impl WorkerHost {
         })
         .await;
         self.pending.lock().await.remove(operation_id.as_str());
+        preparation_timing(if session_file.is_empty() { "create-rpc" } else { "resume-rpc" }, opening);
         let opened = result.context("SDK worker session open timed out")??;
         self.known_sessions
             .lock()
@@ -3916,13 +3885,9 @@ impl PiPublishers {
 #[derive(Clone)]
 struct WorkerToolPublication { origin: uuid::Uuid, event: WorkerEvent }
 
-const CATALOG_TTL: Duration = Duration::from_secs(60);
-const CATALOG_PREFETCH_AGE: Duration = Duration::from_secs(35);
-
 struct CatalogSnapshot {
     observed_at: std::time::Instant,
     catalog: kompi_protocol::ModelCatalog,
-    prefetch_attempted: bool,
 }
 
 enum CatalogWorker {
@@ -3945,45 +3910,17 @@ impl WorkerPool {
     fn new() -> Self {
         let pi_frames = PiPublishers::new();
         let (android_tools, _) = tokio::sync::broadcast::channel(32);
-        Self { pi_frames, android_tools, artifacts: artifact::ArtifactStore::default(), processes: Arc::new(tokio::sync::Mutex::new(HashMap::new())), catalog_requests: Arc::new(tokio::sync::Semaphore::new(1)), catalog: Arc::new(Mutex::new(None)), catalog_worker: Arc::new(Mutex::new(CatalogWorker::Available(None))), catalog_refresh: Arc::new(tokio::sync::Mutex::new(None)) }
-    }
-
-    fn fresh_catalog(&self) -> Option<kompi_protocol::ModelCatalog> {
-        self.catalog.lock().expect("model catalog poisoned").as_ref()
-            .filter(|snapshot| snapshot.observed_at.elapsed() < CATALOG_TTL)
-            .map(|snapshot| snapshot.catalog.clone())
+        Self { pi_frames, android_tools, artifacts: artifact::ArtifactStore::default(), processes: Arc::new(tokio::sync::Mutex::new(HashMap::new())), catalog_requests: Arc::new(tokio::sync::Semaphore::new(32)), catalog: Arc::new(Mutex::new(None)), catalog_worker: Arc::new(Mutex::new(CatalogWorker::Available(None))), catalog_refresh: Arc::new(tokio::sync::Mutex::new(None)) }
     }
 
     async fn models(&self) -> Result<kompi_protocol::ModelCatalog> {
-        if let Some(catalog) = self.fresh_catalog() { return Ok(catalog); }
-        let wait_started = std::time::Instant::now();
-        let mut last_failure = self.catalog_refresh.lock().await;
-        if let Some(catalog) = self.fresh_catalog() { return Ok(catalog); }
-        // An expired reader may have joined a speculative or foreground refresh.
-        // Share its failure instead of putting a second discovery on this ACK path.
-        if last_failure.is_some_and(|failed_at| failed_at >= wait_started) {
-            bail!("Pi model catalog refresh failed");
+        let requested = std::time::Instant::now();
+        let mut failure = self.catalog_refresh.lock().await;
+        if failure.is_some_and(|at| at >= requested) { bail!("Pi model catalog refresh failed"); }
+        if let Some(snapshot) = self.catalog.lock().expect("model catalog poisoned").as_ref().filter(|s| s.observed_at >= requested) {
+            return Ok(snapshot.catalog.clone());
         }
-        self.discover_catalog(&mut last_failure).await
-    }
-
-    fn prefetch_catalog(&self, state_directory: &Path) {
-        let Ok(mut last_failure) = self.catalog_refresh.clone().try_lock_owned() else { return; };
-        {
-            let mut catalog = self.catalog.lock().expect("model catalog poisoned");
-            let Some(snapshot) = catalog.as_mut().filter(|snapshot| {
-                !snapshot.prefetch_attempted && (CATALOG_PREFETCH_AGE..CATALOG_TTL).contains(&snapshot.observed_at.elapsed())
-            }) else { return; };
-            // At most once for this observation. No timer, retry loop, or stale fallback.
-            snapshot.prefetch_attempted = true;
-        }
-        let pool = self.clone();
-        let state_directory = state_directory.to_owned();
-        tokio::spawn(async move {
-            if crate::resource_admission::check(&state_directory).is_ok() {
-                let _ = pool.discover_catalog(&mut last_failure).await;
-            }
-        });
+        self.discover_catalog(&mut failure).await
     }
 
     async fn discover_catalog(&self, last_failure: &mut Option<std::time::Instant>) -> Result<kompi_protocol::ModelCatalog> {
@@ -4005,7 +3942,6 @@ impl WorkerPool {
                 *self.catalog.lock().expect("model catalog poisoned") = Some(CatalogSnapshot {
                     observed_at,
                     catalog: catalog.clone(),
-                    prefetch_attempted: false,
                 });
                 Ok(catalog)
             }
@@ -4304,9 +4240,16 @@ fn activation_error(conversation_id: kompi_protocol::ConversationId, code: &str,
     Message::Error { code: code.into(), message: message.into(), session_id: None, conversation_id: Some(conversation_id) }
 }
 
+fn preparation_timing(stage: &'static str, started: std::time::Instant) {
+    if std::env::var_os("KOMPI_PREPARE_TIMING").is_some() {
+        eprintln!("Kompi session preparation: stage={stage} elapsed_ms={}", started.elapsed().as_millis());
+    }
+}
+
 fn public_prompt_failure(code: &str) -> &'static str {
     // Never relay arbitrary worker/provider exception messages or credentials.
     match code {
+        "model-configuration-unavailable" => "The selected model or effort is unavailable. Open the model selector, choose a configured model, and resend.",
         "model-authentication-failed" => "Model authentication failed or expired. Sign in again on the computer, then resend your message.",
         "model-quota-exceeded" => "The model provider's quota or billing limit was reached. Check the account on the computer, then resend your message.",
         "model-rate-limited" => "The model provider is rate limiting requests. Wait a moment, then resend your message.",
