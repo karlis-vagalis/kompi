@@ -11,7 +11,7 @@ Starting with v0.1.2, GitHub Releases carry two standalone signed Android APKs: 
 
 ## Cut a release
 
-1. Set the Android `versionName` to `MAJOR.MINOR.PATCH`, increment `versionCode`, and update crate versions and lockfiles. Merge to `main` and confirm CI passes.
+1. Set the Android `versionName` to `MAJOR.MINOR.PATCH`, increment `versionCode`, and update crate versions and lockfiles. Merge to `main` and confirm CI passes on that exact commit. CI checks the version against earlier tags and inspects the application ID, version and ABI in both built APKs.
 2. As repository owner, run `git tag vMAJOR.MINOR.PATCH <tested-main-commit>` and `git push origin refs/tags/vMAJOR.MINOR.PATCH`. Do **not** publish a release manually. Prepare the release notes in a draft and confirm the [corresponding source](#corresponding-source) directions before pushing the tag.
 3. Actions builds both hosts and the Android app, checks the versions and signs and verifies both APKs. It uploads both APKs, both installers, both daemon archives and `SHA256SUMS` to the draft. For `v0.1.0` it selects existing draft ID `455244515` via the Releases API. Later tags reuse a matching draft or create one. The workflow compares every uploaded asset’s GitHub digest with its local SHA-256 and verifies the tag still resolves to the tested commit before making the release public.
 4. On transient failure, rerun failed jobs as owner. Matching assets are reused, mismatches replaced only in a draft. Unexpected extra assets block publication: inspect them before retrying. Do not edit the draft while the job runs, publish it manually or move an existing tag. If a source fix is required, release it under a new version.
