@@ -560,6 +560,7 @@ class KokoroTtsEngine(
                 val selectedVoice = voices.firstOrNull { it.id == preferredVoiceId } ?: defaultVoice
                 if (closed.get()) throw CancellationException("Kokoro engine closed during initialization")
                 runtime?.close()
+                preparedCue = null
                 runtime = replacement
                 mutableAvailableVoices.value = voices
                 mutableSelectedVoice.value = selectedVoice
@@ -578,6 +579,34 @@ class KokoroTtsEngine(
                     storageBytes = model.length(),
                 )
             }
+            }
+        }
+    }
+
+    private data class CueChunk(val samples: FloatArray, val sampleRateHz: Int)
+    private data class PreparedCue(val voice: KokoroVoiceId, val input: String, val chunks: List<CueChunk>)
+    // Accessed only under runtimeMutex. Exactly one fixed phrase, never user or reply audio.
+    private var preparedCue: PreparedCue? = null
+    fun prepareToolCue(prefix: String) {
+        val phrase = listOf(prefix.trim().take(39), com.kompi.app.stream.ActivityCueText.Tools)
+            .filter { it.isNotEmpty() }.joinToString(" ")
+        val input = SynthesisText.parse(phrase, MAX_TEXT_CHARS)?.input ?: return
+        scope.launch(inferenceDispatcher) {
+            runtimeMutex.withLock {
+                val engine = runtime ?: return@withLock
+                val voice = mutableSelectedVoice.value?.id ?: return@withLock
+                if (!mutableEnabled.value || preparedCue?.let { it.voice == voice && it.input == input } == true) return@withLock
+                try {
+                    val chunks = mutableListOf<CueChunk>()
+                    var samples = 0L
+                    engine.synthesizeStream(input, SynthesisOptions(voiceId = voice.value)).collect {
+                        samples += it.samples.size
+                        check(samples <= 480_000)
+                        if (it.samples.isNotEmpty()) chunks += CueChunk(it.samples.copyOf(), it.sampleRateHz)
+                    }
+                    if (chunks.isNotEmpty()) preparedCue = PreparedCue(voice, input, chunks)
+                } catch (cancelled: CancellationException) { throw cancelled }
+                  catch (_: Exception) { /* Real speech still has its normal synthesis path. */ }
             }
         }
     }
@@ -638,10 +667,15 @@ class KokoroTtsEngine(
                         if (speech.phrase.input != speech.text) {
                             Log.i(TAG, "Kokoro text formatting: request=${speech.requestId} seq=${speech.sequence} sourceCharacters=${speech.text.length} inputCharacters=${speech.phrase.input.length}")
                         }
-                        engine.synthesizeStream(
-                            speech.phrase.input,
-                            SynthesisOptions(voiceId = speech.voiceId.value),
-                        ).collect { chunk ->
+                        val cached = preparedCue?.takeIf { speech.requestId.startsWith("activity-") && it.input == speech.phrase.input && it.voice == speech.voiceId }
+                        if (cached != null) com.kompi.app.diagnostics.SpeechAudit.record(speech.requestId, speech.sequence, "prepared_cue_used")
+                        val audio = kotlinx.coroutines.flow.flow {
+                            if (cached != null) for (chunk in cached.chunks) emit(chunk)
+                            else engine.synthesizeStream(speech.phrase.input, SynthesisOptions(voiceId = speech.voiceId.value)).collect {
+                                emit(CueChunk(it.samples, it.sampleRateHz))
+                            }
+                        }
+                        audio.collect { chunk ->
                             if (isSpeechCancelled(speech)) throw CancellationException("Speech stopped")
                             if (chunk.samples.isEmpty()) return@collect
                             if (firstPcm) {

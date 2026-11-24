@@ -82,6 +82,7 @@ const CAPABILITIES: &[&str] = &[
     "session-state",
     "multi-session",
     "concurrent-conversations",
+    "live-prewarm-v1",
     kompi_protocol::CHAT_STREAMS_CAPABILITY,
     "phone-conversations",
     "pi-session-events",
@@ -1334,6 +1335,7 @@ impl Daemon {
         let daemon = self.clone();
         let peer = endpoint.to_owned();
         let pi_task = tokio::spawn(async move {
+            let mut writes = PiWriteWindow::default();
             loop {
                 let publication = match pi_frames.recv().await {
                     Ok(publication) => publication,
@@ -1350,7 +1352,7 @@ impl Daemon {
                 if let Some(owner) = publication.primary_generation {
                     if owner != generation { continue; }
                 } else if chat_routes.active.lock().expect("chat routes poisoned").contains(&frame.conversation_id) { continue; }
-                if sender.send(&pi_envelope(frame)).await.is_err() { break; }
+                if writes.send(&sender, frame).await.is_err() { break; }
             }
         });
         // Control messages and journal/tool notifications share dispatch, but
@@ -2100,6 +2102,10 @@ impl Daemon {
                     let generation = connection.generation();
                     let sender = connection.sender();
                     tokio::spawn(async move {
+                        if request.id.as_str().starts_with("live-prewarm-") {
+                            daemon.prewarm_live(&peer, generation, conversation_id).await;
+                            return;
+                        }
                         let message = match daemon.activate_conversation(&peer, generation, conversation_id).await {
                             Ok(message) => message,
                             Err(error) => {
@@ -2207,6 +2213,38 @@ impl Daemon {
             if self.sqlite.device(endpoint).await?.is_some() { self.sqlite.upsert_conversation(&row).await?; }
         }
         conversation_message(&row, self.sqlite.conversation_configuration(endpoint, target).await?)
+    }
+
+    async fn prewarm_live(&self, peer: &str, generation: u64, conversation: kompi_protocol::ConversationId) {
+        // Best-effort hint; never submit input or reserve a durable chat. The normal
+        // prompt path adopts the prepared worker under this same admission lock.
+        static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+        let Ok(_slot) = SLOTS.try_acquire() else { return };
+        if conversation.as_uuid().get_version_num() != 4 { return; }
+        let lane = self.prompt_lane(peer, conversation);
+        let guard = lane.admission.lock().await;
+        let Ok(home) = dirs::home_dir().context("missing home").and_then(|p| Ok(std::fs::canonicalize(p)?)) else { return };
+        let project = home.to_string_lossy();
+        if !matches!(self.sqlite.conversation_by_id(peer, conversation, &project).await, Ok(None)) { return; }
+        let authorization = self.runtime_authorization(peer);
+        let auth = authorization.read().await;
+        if !self.is_current_connection(peer, generation) { return; }
+        let Ok(Some(device)) = self.sqlite.device(peer).await else { return };
+        if self.worker.belongs_to(peer, conversation).await { return; }
+        let Ok(created) = wire_timestamp(now_ms()) else { return };
+        let Ok(worker) = self.worker.process_for(conversation, peer).await else { return };
+        if worker.prepare(conversation, None, "", &device.name, created).await.is_err() {
+            let _ = self.worker.dispose(conversation).await;
+            return;
+        }
+        drop(auth);
+        drop(guard);
+        eprintln!("Kompi Live prewarm ready: conversation={conversation}");
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        let _guard = lane.admission.lock().await;
+        if matches!(self.sqlite.conversation_by_id(peer, conversation, &project).await, Ok(None)) {
+            let _ = self.worker.dispose(conversation).await;
+        }
     }
 
     async fn activate_conversation(
@@ -3020,7 +3058,32 @@ impl Daemon {
 
 }
 
+#[derive(Default)]
+struct PiWriteWindow { frames: u64, json_bytes: u64 }
+
+impl PiWriteWindow {
+    async fn send(&mut self, sender: &crate::lifecycle::ReadySender, frame: kompi_protocol::PiFrame) -> Result<()> {
+        let tagged = frame.part == 0 && matches!(frame.kind, kompi_protocol::PiFrameKind::Event) && frame.json.starts_with("{\"kompiActivityObservedMs\":");
+        let seq = frame.sequence;
+        let len = frame.json.len() as u64;
+        let envelope = pi_envelope(frame);
+        sender.send(&envelope).await?;
+        if tagged {
+            eprintln!("Kompi activity write complete: id={} seq={} wall_ms={} preceding_frames={} preceding_json_bytes={}", envelope.id.as_str(), seq, now_ms(), self.frames, self.json_bytes);
+            *self = Self::default();
+        } else {
+            self.frames += 1;
+            self.json_bytes += len;
+        }
+        Ok(())
+    }
+}
+
 fn pi_envelope(frame: kompi_protocol::PiFrame) -> Envelope<Message> {
+    // Only timestamp tagged live activity at egress; never log command arguments or message text.
+    if frame.part == 0 && matches!(frame.kind, kompi_protocol::PiFrameKind::Event) && frame.json.starts_with("{\"kompiActivityObservedMs\":") {
+        eprintln!("Kompi activity egress: sequence={} request={:?} wall_ms={}", frame.sequence, frame.request_id, now_ms());
+    }
     let id = RequestId::parse(format!("pi-{}-{}-{}", frame.conversation_id, frame.sequence, frame.part)).expect("generated Pi frame id");
     Envelope::new(id, Message::PiFrame { frame })
 }

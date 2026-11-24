@@ -46,7 +46,7 @@ class LivePiActivityBehaviorTest {
                 settled = { id, _, _, _ -> activity.complete(id) },
                 thinkingTitle = { id, _, _, title ->
                     h.controller.updateThinkingTitle(id, title)
-                    activity.offer(id, "Thinking: $title", prefix, gate)
+                    activity.offer(id, "Thinking: $title", prefix, gate, allowTools = true)
                 },
                 usingTools = { id, _, _ ->
                     h.controller.updateActivity(id, "Using tools")
@@ -54,7 +54,7 @@ class LivePiActivityBehaviorTest {
                 },
                 liveActivity = { id, _, _, label ->
                     h.controller.updateActivity(id, label)
-                    activity.offer(id, label, prefix, gate)
+                    activity.offer(id, label, prefix, gate, allowTools = true)
                 },
             )
             pi.bindConversation("voice-conversation")
@@ -98,31 +98,37 @@ class LivePiActivityBehaviorTest {
         }
     }
 
-    @Test fun l55_substantiveUntitledContentOffersOnlyOneFixedGenericCue() {
+    @Test fun l55_untitledBlockSpeaksOnlyItsFirstSentence() {
         begin(); update("thinking_start")
         update("thinking_delta", delta = "There is substantive synthetic reasoning here.\n")
         update("thinking_delta", delta = "More private reasoning is not another spoken prompt.\n")
         update("thinking_end", content = "There is substantive synthetic reasoning here.\nMore private reasoning is not another spoken prompt.\n")
-        h.main { assertEquals(listOf("$prefix thinking it through"), audio.map { it.second }) }
+        h.main { assertEquals(listOf("There is substantive synthetic reasoning here."), audio.map { it.second }) }
     }
 
-    @Test fun l55_onlySecondConsecutiveToolStartsOneCueAndPublicTextResetsSpan() {
+    @Test fun l55_toolAfterPlaybackDrainsSpeaksAgainWithoutInterveningText() {
         begin(); tool(0)
-        h.main { assertTrue(audio.isEmpty()) }
+        h.main { assertEquals(listOf("$prefix checking a few things"), audio.map { it.second }) }
         tool(1); tool(2)
         h.main { assertEquals(listOf("$prefix checking a few things"), audio.map { it.second }); activity.onPlaybackDrained(audio.single().first) }
-        update("text_start", index = 3); update("text_delta", index = 3, delta = "Public progress. ")
-        tool(4); tool(5)
+        tool(3); tool(4)
         h.main { assertEquals(listOf("$prefix checking a few things", "$prefix checking a few things"), audio.map { it.second }) }
     }
 
-    @Test fun l56_realHeadingReplacesOnlyUnstartedGenericFiller() {
+    @Test fun l56_latestHeadingFollowsFirstLineOnDrain() {
         begin(); update("thinking_start")
         update("thinking_delta", delta = "Substantive reasoning without a heading.\n")
         h.main { assertEquals(1, audio.size) }
         val generic = audio.single().first
         update("thinking_delta", delta = "**A real heading**\n")
-        h.main { assertEquals(2, audio.size); assertEquals(listOf(generic), stopped); assertEquals("$prefix A real heading", audio.last().second) }
+        update("thinking_delta", delta = "**Latest heading**\n")
+        h.main {
+            assertEquals(1, audio.size)
+            activity.onPlaybackDrained(generic)
+            assertEquals(2, audio.size)
+            assertTrue(stopped.isEmpty())
+            assertEquals("$prefix Latest heading", audio.last().second)
+        }
     }
 
     @Test fun l56_admittedRealTitleSurvivesPublicTextAndModelCompletionUntilAudioDrain() {

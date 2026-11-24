@@ -53,7 +53,7 @@ class PiSessionStore(
         val lines: List<Line> = emptyList(), val loading: Boolean = true, val representedRequests: Set<String> = emptySet(),
         val sessionName: String? = null, val snapshotRevision: Long = 0, val hostId: String? = null, val readableReplies: Set<String> = emptySet())
     private data class Entry(val id: String, val parentId: String?, val raw: JSONObject, val details: Details)
-    private data class Record(val frame: PiFrame, val value: JSONObject, val connection: String?, val origin: Origin)
+    private data class Record(val frame: PiFrame, val value: JSONObject, val connection: String?, val origin: Origin, val receivedMs: Long)
     private data class UpdateWindow(val request: String, val conversation: String, val epoch: String,
         val connection: String?, val origin: Origin, var last: ChatTiming.Time, var sawText: Boolean = false) {
         fun record(stage: Stage, at: ChatTiming.Time = ChatTiming.now()) = ChatTiming.record(stage, request,
@@ -89,15 +89,19 @@ class PiSessionStore(
         class Text(val text: StringBuilder = StringBuilder()) : LiveBlock
         class Thinking(val text: StringBuilder = StringBuilder(), val headings: ThinkingTitles = ThinkingTitles()) : LiveBlock {
             private var fallbackOffered = false
-            fun offerFallback(): Boolean {
-                if (fallbackOffered || headings.titles.isNotEmpty()) return false
+            fun firstLine(ended: Boolean): String? {
+                if (fallbackOffered || headings.titles.isNotEmpty()) return null
                 val content = text.toString().trimStart()
-                // Give a possible first-line bold heading time to finish, but never wait for
-                // an ordinary reasoning paragraph (or the entire thinking block) to end.
-                val possibleHeading = content == "*" || (content.startsWith("**") && content.length <= 200 && '\n' !in content)
-                if (possibleHeading || content.none { it.isLetterOrDigit() }) return false
+                if (content.startsWith("*") || content.none { it.isLetterOrDigit() }) return null
+                val boundary = content.indexOfFirst { it in ".!?\n" }
+                val end = when {
+                    boundary in 0..95 -> boundary + 1
+                    content.length >= 96 -> content.take(96).lastIndexOf(' ').takeIf { it > 0 } ?: 96
+                    ended -> content.length
+                    else -> return null
+                }
                 fallbackOffered = true
-                return true
+                return content.take(end).trim()
             }
         }
         class Tool(val id: String, val name: String, val arguments: StringBuilder = StringBuilder(), var final: JSONObject? = null) : LiveBlock
@@ -172,9 +176,6 @@ class PiSessionStore(
     private val renderKeys = mutableMapOf<String, String>()
     private val rowCache = mutableMapOf<String, List<Line>>()
     private var active: Live? = null
-    private enum class ToolSpan { None, OneCall, Announced }
-    private var toolSpan = ToolSpan.None
-    private var toolSpanRequest: String? = null
     private val completedLive = mutableListOf<Live>()
     private val canonicalResponses = mutableMapOf<String, LinkedHashMap<String, String>>()
     private var canonicalSequence = -1L
@@ -222,7 +223,6 @@ class PiSessionStore(
         flushTimingUpdates()
         waiting = true; requested = false; pendingSource = null; parts.clear(); buffered.clear(); bufferedChars = 0
         active = null; completedLive.clear()
-        toolSpan = ToolSpan.None; toolSpanRequest = null
         _view.value = _view.value.copy(loading = true)
     }
     @Synchronized fun clear() {
@@ -230,7 +230,6 @@ class PiSessionStore(
         entries.clear(); sessionName = null; rowCache.clear(); renderKeys.clear(); active = null; epoch = null; leaf = null
         conversation = null; session = null; sequence = -1; answerRequests.clear(); represented.clear(); userRequests.clear()
         pendingSource = null; retiredSources.clear(); settledRequests.clear()
-        toolSpan = ToolSpan.None; toolSpanRequest = null
         parts.clear(); buffered.clear(); bufferedChars = 0; speechSequences.clear(); completedLive.clear(); canonicalResponses.clear(); canonicalSequence = -1L
         waiting = false; requested = false
         publish()
@@ -248,7 +247,7 @@ class PiSessionStore(
         requested = true
         needSnapshot()
     }
-    @Synchronized fun accept(frame: PiFrame, timingConnection: String? = null, allowUnobservedPrefix: Boolean = false) {
+    @Synchronized fun accept(frame: PiFrame, timingConnection: String? = null, allowUnobservedPrefix: Boolean = false, receivedMs: Long = System.currentTimeMillis()) {
         if (conversation != null && frame.conversationId != conversation) return
         val key = "${frame.epoch}:${frame.kind}:${frame.sequence}"
         // Selecting a conversation may join in the middle of an already in-flight record.
@@ -285,7 +284,7 @@ class PiSessionStore(
         if (!frame.last) return
         parts.remove(key)
         val origin = if (waiting) Origin.Catchup else Origin.Live
-        val record = Record(frame, JSONObject(partial.text.toString()), timingConnection, origin)
+        val record = Record(frame, JSONObject(partial.text.toString()), timingConnection, origin, receivedMs)
         if (frame.kind == "snapshot") {
             ChatTiming.record(Stage.PhoneSnapshotReceived, conversation = frame.conversationId,
                 connection = timingConnection, origin = Origin.History)
@@ -391,7 +390,7 @@ class PiSessionStore(
                     val titles = active!!.update(update, event.optJSONObject("usage"))
                     if (update.getString("type") in setOf("thinking_start", "toolcall_start")) f.requestId?.let { id ->
                         com.kompi.app.diagnostics.SpeechAudit.record(id, stage = "pi_activity_observed",
-                            detail = "kind=${update.getString("type")} origin=${active!!.origin.name}")
+                            detail = "kind=${update.getString("type")} origin=${active!!.origin.name} seq=${f.sequence} workerMs=${event.optLong("kompiActivityObservedMs", 0)} receivedMs=${record.receivedMs}")
                     }
                     // Only newly observed live headings may speak; snapshots/history stay silent.
                     if (active!!.origin == LiveOrigin.Started) f.requestId?.let { id ->
@@ -400,30 +399,19 @@ class PiSessionStore(
                             "toolcall_start" -> liveActivity(id, f.sessionId, f.conversationId, "Tool: ${update.getString("toolName").take(256)}")
                         }
                         titles.forEach { thinkingTitle(id, f.sessionId, f.conversationId, it) }
-                        if (update.getString("type") == "thinking_delta") {
+                        if (update.getString("type") in setOf("thinking_delta", "thinking_end")) {
                             val block = active!!.blocks[update.getInt("contentIndex")] as LiveBlock.Thinking
-                            if (block.offerFallback()) thinkingTitle(id, f.sessionId, f.conversationId, "thinking")
+                            block.firstLine(update.getString("type") == "thinking_end")?.let { line ->
+                                liveActivity(id, f.sessionId, f.conversationId, "Thinking line: $line")
+                            }
                         }
                         if (update.getString("type") == "thinking_end") {
                             val block = active!!.blocks[update.getInt("contentIndex")] as LiveBlock.Thinking
-                            if (block.headings.titles.isEmpty()) com.kompi.app.diagnostics.SpeechAudit.record(id,
-                                stage = "activity_skipped", detail = if (block.text.isBlank()) "empty_thinking_block" else "completed_thinking_no_new_filler")
+                            if (block.text.isBlank()) com.kompi.app.diagnostics.SpeechAudit.record(id,
+                                stage = "activity_skipped", detail = "empty_thinking_block")
                         }
-                        if (toolSpanRequest != id) {
-                            toolSpanRequest = id
-                            toolSpan = ToolSpan.None
-                        }
-                        when (update.getString("type")) {
-                            "text_start" -> toolSpan = ToolSpan.None
-                            "toolcall_start" -> toolSpan = when (toolSpan) {
-                                ToolSpan.None -> ToolSpan.OneCall
-                                ToolSpan.OneCall -> {
-                                    usingTools(id, f.sessionId, f.conversationId)
-                                    ToolSpan.Announced
-                                }
-                                ToolSpan.Announced -> ToolSpan.Announced
-                            }
-                        }
+                        // Admission follows actual playout, not the visual tool group's lifetime.
+                        if (update.getString("type") == "toolcall_start") usingTools(id, f.sessionId, f.conversationId)
                     }
                 }
                 if (update?.optString("type") == "text_delta" && update.getString("delta").isNotEmpty()) {

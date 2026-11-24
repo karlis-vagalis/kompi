@@ -694,7 +694,9 @@ private fun KompiApp(
             tts.requestStatuses.collect { statuses ->
                 statuses.values.filter { it.state in setOf(KokoroSpeechStatus.Completed, KokoroSpeechStatus.Cancelled, KokoroSpeechStatus.Failed) }
                     .forEach {
-                        activitySpeech.onPlaybackDrained(it.requestId)
+                        activitySpeech.onPlaybackDrained(it.requestId) { id ->
+                            if (it.state == KokoroSpeechStatus.Completed) activitySpeechGate(id) else ActivitySpeechGate.VoiceNotReady
+                        }
                         if (it.state == KokoroSpeechStatus.Completed) liveControllerRef.value?.onAssistantPlaybackDrained(it.requestId)
                     }
             }
@@ -1240,7 +1242,12 @@ private fun KompiApp(
                 keyboardVisible = keyboardVisible,
                 liveControllerRef = liveControllerRef,
                 onRegisterCaptureHandoff = { handoff -> captureHandoffRef.value = handoff },
-                onLiveActiveChanged = {},
+                onLiveActiveChanged = { active ->
+                    if (active) {
+                        transport.prewarmLiveDraft()
+                        if (ttsEnabled && thinkingSpeechEnabled) tts.prepareToolCue(thinkingSpeechPrefix)
+                    }
+                },
                 liveContextKey = draftScope ?: selectedMachineKey,
                 attachmentDraftScope = draftScope,
                 independentChats = focusedChat != null,

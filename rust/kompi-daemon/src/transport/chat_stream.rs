@@ -64,6 +64,7 @@ impl Daemon {
         let peer = endpoint.to_owned();
         let projection_sender = sender.clone();
         let mut projection = tokio::spawn(async move {
+            let mut writes = PiWriteWindow::default();
             while let Some(mut published) = publications.recv().await {
                 if !projection_daemon.is_current_connection(&peer, generation) {
                     break;
@@ -83,8 +84,8 @@ impl Daemon {
                     ProjectionRoute::Drop => continue,
                     ProjectionRoute::Reset => break,
                     ProjectionRoute::Send => {
-                        if projection_sender
-                            .send(&pi_envelope(published.frame))
+                        if writes
+                            .send(&projection_sender, published.frame)
                             .await
                             .is_err()
                         {
@@ -226,6 +227,11 @@ impl Daemon {
                         if daemon.snapshot_conversation(&peer, generation, conversation, Some(token.clone())).await.is_ok() { return; }
                         if !barrier.lock().expect("chat projection poisoned").fail(&token) { return; }
                         snapshot_error(Some(conversation))
+                    }
+                    ChatCommand::Activate if request.as_str().starts_with("live-prewarm-") => {
+                        drop(_permits);
+                        daemon.prewarm_live(&peer, generation, conversation).await;
+                        return;
                     }
                     ChatCommand::Activate => daemon.activate_conversation(&peer, generation, conversation).await
                         .unwrap_or_else(|_| activation_error(conversation, "conversation-unavailable", "Could not continue this conversation. It is still available to browse if its transcript can be loaded.")),

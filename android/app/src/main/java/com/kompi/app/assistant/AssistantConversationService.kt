@@ -265,7 +265,9 @@ class AssistantConversationService : Service(), LifecycleOwner {
                 statuses.values.filter { it.requestId in requests && it.state in setOf(KokoroSpeechStatus.Completed, KokoroSpeechStatus.Cancelled, KokoroSpeechStatus.Failed) }
                     .forEach { if (it.state == KokoroSpeechStatus.Completed) live.onAssistantPlaybackDrained(it.requestId) }
                 statuses.values.filter { it.requestId.startsWith("activity-") && it.state in setOf(KokoroSpeechStatus.Completed, KokoroSpeechStatus.Cancelled, KokoroSpeechStatus.Failed) }
-                    .forEach { activitySpeech.onPlaybackDrained(it.requestId) }
+                    .forEach { activitySpeech.onPlaybackDrained(it.requestId) { _ ->
+                        if (it.state == KokoroSpeechStatus.Completed) activitySpeechGate() else ActivitySpeechGate.VoiceNotReady
+                    } }
             }
         }
         scope.launch { network.piDialogs.collect { requests -> AssistantCoordinator.publish(token) { AssistantCoordinator.dialogs.value = requests } } }

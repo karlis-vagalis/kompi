@@ -11,12 +11,14 @@ class ActivitySpeech(
 ) {
     enum class Gate { Open, Muted, NotForeground, OtherConversation, ReplyAudioPending, OtherAudioPending, VoiceNotReady }
     data class PlaybackOwner(val requestId: String, val title: String)
-    private enum class Kind { GenericThinking, Title, Tools }
+    private enum class Kind { GenericThinking, Line, Title, Tools }
     private data class Accepted(val owner: PlaybackOwner, val kind: Kind, var playbackStarted: Boolean = false)
     private val accepted = linkedMapOf<String, Accepted>()
     private val requests = LinkedHashMap<String, String?>()
     private val retired = linkedSetOf<String>()
     private val titleCounts = mutableMapOf<String, Int>()
+    private data class Next(val request: String, val label: String, val prefix: String)
+    private var next: Next? = null
     private val replyTextSeen = linkedSetOf<String>()
 
     /** Only newly submitted foreground requests are eligible; recovered work stays silent. */
@@ -43,9 +45,15 @@ class ActivitySpeech(
             return
         }
         val isTools = allowTools && activity == "Using tools"
-        val title = if (isTools) "using tools" else activity.takeIf { it.startsWith("Thinking: ") }
+        val line = activity.startsWith("Thinking line: ")
+        if (line && !allowTools) {
+            offer(requestId, "Thinking: thinking", prefix, gate)
+            return
+        }
+        val title = if (line) activity.removePrefix("Thinking line: ") else if (isTools) "using tools" else activity.takeIf { it.startsWith("Thinking: ") }
             ?.removePrefix("Thinking: ")?.trim() ?: return
         val kind = when {
+            line -> Kind.Line
             isTools -> Kind.Tools
             title == "thinking" -> Kind.GenericThinking
             else -> Kind.Title
@@ -55,7 +63,7 @@ class ActivitySpeech(
         val cue = when (kind) {
             Kind.Tools -> SpeechAudit.Cue.Tools
             Kind.GenericThinking -> SpeechAudit.Cue.Thinking
-            Kind.Title -> ordinal?.let { SpeechAudit.Cue.Title(it, SpeechAudit.fingerprint(title)) }
+            Kind.Line, Kind.Title -> ordinal?.let { SpeechAudit.Cue.Title(it, SpeechAudit.fingerprint(title)) }
         }
         val source = cue?.let { SpeechAudit.Source.Activity(it, SpeechAudit.fingerprint(prefix.trim().take(39))) }
         fun report(outcome: String) {
@@ -65,10 +73,12 @@ class ActivitySpeech(
         if (title.isEmpty() || title.length > 160 || title.any { it == '\n' || it == '\r' }) return
         if (kind == Kind.Title) discardUnstartedGeneric(requestId, "replaced_by_real_heading")
         if (gate != Gate.Open) { report("skipped_${gate.name}"); return }
-        if (kind == Kind.GenericThinking && requestId in replyTextSeen) { report("reply_text_already_received"); return }
+        if (!isTools && requestId in replyTextSeen) { report("reply_text_already_received"); return }
         if (!isTools && requests[requestId] == title) { report("duplicate"); return }
         // One tool cue may follow an admitted thinking readout, never a backlog of stale headings.
         if (accepted.isNotEmpty() && (!isTools || accepted.size >= 2 || accepted.values.any { it.kind == Kind.Tools })) {
+            if (!isTools && allowTools) next = Next(requestId, activity, prefix)
+            else if (isTools) next = null
             report("activity_busy")
             return
         }
@@ -76,9 +86,10 @@ class ActivitySpeech(
         val spokenSuffix = when (kind) {
             Kind.GenericThinking -> ActivityCueText.Thinking
             Kind.Tools -> ActivityCueText.Tools
-            Kind.Title -> title
+            Kind.Line, Kind.Title -> title
         }
-        val phrase = listOf(prefix.trim().take(39), spokenSuffix).filter { it.isNotEmpty() }.joinToString(" ")
+        next = null
+        val phrase = if (line) title else listOf(prefix.trim().take(39), spokenSuffix).filter { it.isNotEmpty() }.joinToString(" ")
         SpeechAudit.bind(speechId, 0, requestId, source)
         if (phrase.any { it.isLetterOrDigit() } && speak(speechId, phrase)) {
             accepted[speechId] = Accepted(PlaybackOwner(requestId, spokenSuffix), kind)
@@ -89,7 +100,7 @@ class ActivitySpeech(
 
     private fun discardUnstartedGeneric(requestId: String, reason: String) {
         val ids = accepted.filterValues {
-            it.owner.requestId == requestId && it.kind == Kind.GenericThinking && !it.playbackStarted
+            it.owner.requestId == requestId && (it.kind == Kind.GenericThinking || (it.kind == Kind.Line && reason != "replaced_by_real_heading")) && !it.playbackStarted
         }.keys.toList()
         ids.forEach { speechId ->
             accepted.remove(speechId)
@@ -100,6 +111,7 @@ class ActivitySpeech(
     }
 
     fun onReplyText(requestId: String) {
+        if (next?.request == requestId) next = null
         replyTextSeen += requestId
         while (replyTextSeen.size > 64) replyTextSeen.remove(replyTextSeen.first())
         discardUnstartedGeneric(requestId, "reply_text_arrived_before_generic_playback")
@@ -107,6 +119,7 @@ class ActivitySpeech(
 
     /** Explicit interruption cancels all activity audio, including audible headings and tool cues. */
     fun interrupt(requestId: String? = null) {
+        if (requestId == null || next?.request == requestId) next = null
         val ids = accepted.filterValues { requestId == null || it.owner.requestId == requestId }.keys.toList()
         ids.forEach { speechId -> accepted.remove(speechId); stop(speechId) }
     }
@@ -123,10 +136,17 @@ class ActivitySpeech(
         return current.owner
     }
 
-    fun onPlaybackDrained(speechId: String) { accepted.remove(speechId) }
+    fun onPlaybackDrained(speechId: String, gate: (String) -> Gate = { Gate.Open }) {
+        val finished = accepted.remove(speechId) ?: return
+        val pending = next ?: return
+        if (accepted.isNotEmpty() || pending.request != finished.owner.requestId) return
+        next = null
+        offer(pending.request, pending.label, pending.prefix, gate(pending.request), allowTools = true)
+    }
 
     /** Unstarted generic filler yields; admitted real headings/tools and already-playing cues finish. */
     fun complete(requestId: String) {
+        if (next?.request == requestId) next = null
         discardUnstartedGeneric(requestId, "request_completed_before_generic_playback")
         requests.remove(requestId)
         titleCounts.remove(requestId)
