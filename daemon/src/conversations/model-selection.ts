@@ -43,10 +43,12 @@ export async function applyModel(client: Pick<PiRpcClient, "request">, configura
     state.model.id === configuration.modelId && state.thinkingLevel === configuration.effort;
   if (previous?.provider === configuration.provider && previous.modelId === configuration.modelId && previous.effort === configuration.effort &&
       matches(await readSelection())) return;
-  await client.request({ type: "set_model", provider: configuration.provider, modelId: configuration.modelId }).catch((error) => {
+  try {
+    await client.request({ type: "set_model", provider: configuration.provider, modelId: configuration.modelId });
+    await client.request({ type: "set_thinking_level", level: configuration.effort });
+  } catch (error) {
     if (error instanceof PiRpcCommandError) throw new ModelSelectionError();
     throw error;
-  });
-  await client.request({ type: "set_thinking_level", level: configuration.effort });
+  }
   if (!matches(await readSelection())) throw new ModelSelectionError();
 }

@@ -9,6 +9,7 @@ import type { ConversationId } from "./domain.ts";
 import type { WorkerEvent, WorkerRequest } from "../../../pi-extension/src/protocol/generated.ts";
 import type { RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
 import { PiRpcClient, PiRpcCommandError, type RpcDialog, type RpcEvent, type TranscriptLaunch } from "./pi-rpc-client.ts";
+import { preparationTiming } from "./prepare-timing.ts";
 import { applyModel, type ChatConfiguration } from "./model-selection.ts";
 import { transcriptLockPath } from "./transcript-lock.ts";
 
@@ -93,7 +94,9 @@ function wrap(runtime: Runtime, state: Awaited<ReturnType<PiRpcClient["getState"
   const { client } = runtime;
   let previous: ChatConfiguration | undefined;
   const select = async (selection: ChatConfiguration) => {
-    await applyModel(client, selection, previous);
+    const start = performance.now();
+    try { await applyModel(client, selection, previous); }
+    finally { preparationTiming("prompt-selection", start); }
     previous = selection;
   };
   const sessionName = state.sessionName ?? "Kompi";
@@ -343,7 +346,9 @@ export class PiRpcSessionFactory implements SessionFactory {
 
   private async open(id: ConversationId, args: string[], cwd = homedir(), expectedSessionId?: string, transcript?: TranscriptLaunch): Promise<ConversationSession> {
     if (this.runtimes.has(id)) throw new Error("A Pi process already owns this phone conversation");
+    const launch = performance.now();
     const client = new PiRpcClient(cwd, args, transcript);
+    preparationTiming("pi-launch", launch);
     const runtime: Runtime = { client, dialogs: new Map() };
     let piSessionId: string | undefined;
     const unraw = client.onRawEvent((sequence, event) => {
@@ -393,7 +398,8 @@ export class PiRpcSessionFactory implements SessionFactory {
       if (this.runtimes.get(id) === runtime) this.runtimes.delete(id);
     });
     try {
-      const state = await client.getState();
+      const ready = performance.now();
+      const state = await client.getState().finally(() => preparationTiming("pi-initial-state", ready));
       piSessionId = state.sessionId;
       if (!transcript && !(await lstat(transcriptLockPath(state.sessionFile))).isFile()) throw new Error("Pi could not reserve a new transcript");
       if ((expectedSessionId !== undefined && state.sessionId !== expectedSessionId) || (transcript !== undefined && state.sessionFile !== transcript.path)) throw new Error("Pi session does not match the daemon's saved transcript");

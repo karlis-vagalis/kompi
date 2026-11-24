@@ -1,3 +1,4 @@
+import { preparationTiming } from "./conversations/prepare-timing.ts";
 import { PiReadPressure } from "./pi-read-pressure.js";
 import { seal, open } from "./conversations/tool-frame.js";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -475,7 +476,8 @@ async function handleRequest(envelope: ReturnType<typeof parseWorkerRequest>): P
       }
       live.active = { requestId: payload.requestId, envelopeId: id, settlementScheduled: false, members: [payload.requestId], userEntries: [] };
       try {
-        await syncCanonical(live, null);
+        const baseline = performance.now();
+        await syncCanonical(live, null).finally(() => preparationTiming("prompt-baseline", baseline));
         if (ownerClosed.signal.aborted || liveSession !== live) return;
         const stats = await live.session.prompt(
           payload.text,

@@ -3490,6 +3490,9 @@ impl WorkerHost {
                             if *byte == b'\n' {
                                 if !oversized_line {
                                     if let Ok(text) = std::str::from_utf8(&line) {
+                                        if let Some((stage, elapsed)) = parse_prepare_timing(text) {
+                                            if std::env::var_os("KOMPI_PREPARE_TIMING").is_some() { eprintln!("Kompi session preparation: stage={stage} elapsed_ms={elapsed}"); }
+                                        }
                                         if let Some((phase, category, error_name, module)) = parse_worker_diagnostic(text) {
                                             eprintln!("Kompi worker diagnostic phase={} category={} error={} module={}", phase.as_str(), category.as_str(), error_name, module);
                                         }
@@ -4239,6 +4242,12 @@ fn snapshot_error(conversation_id: Option<kompi_protocol::ConversationId>) -> Me
 
 fn activation_error(conversation_id: kompi_protocol::ConversationId, code: &str, message: &str) -> Message {
     Message::Error { code: code.into(), message: message.into(), session_id: None, conversation_id: Some(conversation_id) }
+}
+
+fn parse_prepare_timing(line: &str) -> Option<(&str, u64)> {
+    let (stage, elapsed) = line.strip_prefix("[pi-worker] prepare ")?.split_once(' ')?;
+    matches!(stage, "pi-launch" | "pi-initial-state" | "prompt-baseline" | "prompt-selection")
+        .then_some((stage, elapsed.parse().ok()?))
 }
 
 fn preparation_timing(stage: &'static str, started: std::time::Instant) {

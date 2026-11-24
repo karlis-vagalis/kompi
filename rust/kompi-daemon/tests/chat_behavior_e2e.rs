@@ -382,6 +382,16 @@ async fn discovery_is_explicit_and_does_not_reopen_phone_session() -> Result<()>
     h.phone.send("refresh", Message::ModelsGet {}).await?;
     h.phone.wait(|e| e.id.as_str() == "refresh" && matches!(e.message, Message::ModelsResult { .. })).await?;
     assert_eq!(counts().lines().filter(|s| *s == "models-get").count(), 2);
+    let fail = h.root.join("home/fail-discovery");
+    std::fs::write(&fail, b"")?;
+    for id in ["fail-a", "fail-b"] { h.phone.send(id, Message::ModelsGet {}).await?; }
+    for id in ["fail-a", "fail-b"] {
+        h.phone.wait(|e| e.id.as_str() == id && matches!(&e.message, Message::Error { code, .. } if code == "models-unavailable")).await?;
+    }
+    std::fs::remove_file(fail)?;
+    h.phone.send("retry", Message::ModelsGet {}).await?;
+    h.phone.wait(|e| e.id.as_str() == "retry" && matches!(e.message, Message::ModelsResult { .. })).await?;
+    assert_eq!(counts().lines().filter(|s| *s == "models-get").count(), 4);
     h.stop().await
 }
 
