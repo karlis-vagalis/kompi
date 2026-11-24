@@ -17,7 +17,6 @@ with ZipFile(output, 'w') as archive:
         index.append('\t'.join([name, version, package['license'] or '',
                                 package['source'] or f'third-party/{name}']))
         # Some native dependencies keep their notices below vendor/ or in source headers.
-        # Keep the entire locked crate source available in the release source archive too.
         for path in sorted(source.rglob('*')):
             relative = path.relative_to(source)
             if 'target' in relative.parts or '.git' in relative.parts or path.is_symlink():

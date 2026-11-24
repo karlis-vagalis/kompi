@@ -134,20 +134,11 @@ jobs:
           mode: ${{ needs.plan.outputs.cache }}
           profile: dev-test0-dist
           publish: 'true'
-      - if: inputs.package || github.ref_type == 'tag'
-        run: bash scripts/prepare-sources.sh
-      - if: ${{ !inputs.package && github.ref_type != 'tag' }}
-        run: bash scripts/prepare-sources.sh --notices-only
+      - run: bash scripts/prepare-sources.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: notices
           path: target/package-inputs/notices.tar.gz
-          if-no-files-found: error
-      - if: inputs.package || github.ref_type == 'tag'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: dependency-sources
-          path: target/package-inputs/rust-dependency-sources.tar.gz
           if-no-files-found: error
   bundle:
     needs: [plan, sources]
