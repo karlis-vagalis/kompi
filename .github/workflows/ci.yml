@@ -25,8 +25,10 @@ jobs:
         env:
           CI_PACKAGE: ${{ inputs.package || false }}
         run: python3 scripts/ci-plan.py route
-      - name: Exercise CI routing and gate
-        run: python3 -B -m unittest discover -s scripts -p 'test_ci_*.py'
+      - name: Check release versions and exercise CI gates
+        run: |
+          python3 scripts/android_release.py check
+          python3 -B -m unittest discover -s scripts -p 'test_ci_*.py'
   prek:
     needs: plan
     if: fromJSON(needs.plan.outputs.jobs).prek
@@ -322,7 +324,9 @@ jobs:
       - name: Inspect both standalone APKs
         run: |
           for abi in arm64-v8a x86_64; do
-            python3 scripts/verify-android-package.py "android/app/build/outputs/apk/release/app-$abi-release-unsigned.apk" "$abi"
+            apk="android/app/build/outputs/apk/release/app-$abi-release-unsigned.apk"
+            python3 scripts/android_release.py verify-apk "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/aapt" "$apk" "$abi"
+            python3 scripts/verify-android-package.py "$apk" "$abi"
           done
       - if: inputs.package || github.ref_type == 'tag' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

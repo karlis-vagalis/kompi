@@ -15,8 +15,8 @@ android {
         applicationId = "com.kompi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.1.4"
         buildConfigField("boolean", "PI_FRAME_COALESCING", providers.gradleProperty("piFrameCoalescing").orElse("false").map { it.toBooleanStrict().toString() }.get())
         buildConfigField("boolean", "PI_EAGER_FIRST_PARSE", providers.gradleProperty("piEagerFirstParse").orElse("true").map { it.toBooleanStrict().toString() }.get())
         buildConfigField("String", "MEDIAPIPE_AUDIO_VERSION", "\"$mediaPipeAudioVersion\"")
