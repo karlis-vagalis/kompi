@@ -1012,7 +1012,20 @@ private fun KompiApp(
         when (destination) {
             Destination.Conversation -> key(selectedMachineKey, focusedChat?.id) {
               val target = focusedChat // Freeze the destination before any send coroutine suspends.
-              ConversationScreen(
+              // Only a crash/interrupted submission needs a Room read. Never mount the editor
+              // with the stale text and then asynchronously overwrite what the user is typing.
+              val interrupted = remember { drafts.submission(draftScope) }
+              val initialComposerDraft by produceState<String?>(
+                  if (interrupted == null) drafts.load(draftScope) else null,
+              ) {
+                  if (interrupted != null) {
+                      value = withContext(Dispatchers.IO) {
+                          drafts.restore(draftScope) { id -> localRepository.requestState(selectedMachineKey, id) != null }
+                      }
+                  }
+              }
+              val restoredDraft = initialComposerDraft
+              if (restoredDraft != null) ConversationScreen(
                 modifier = contentModifier,
                 pagerState = pagerState,
                 sidebarContent = {
@@ -1237,7 +1250,7 @@ private fun KompiApp(
                 pendingAttachmentIds = localUiState.local.outbox.flatMap { row -> row.attachmentIds }.toSet(),
                 attachmentShareReceipt = attachmentShareReceipt,
                 attachmentShareImporting = attachmentShareImporting,
-                initialDraft = drafts.load(draftScope),
+                initialDraft = restoredDraft,
                 onDraftChanged = { draft -> drafts.save(draftScope, draft) },
                 onDiscardPrompt = { requestId -> transport.discardUnacceptedPrompt(requestId) },
                 sessionMessage = sessionRefreshMessage,
@@ -1275,6 +1288,8 @@ private fun KompiApp(
                     )
                     if (connectionState != "Disconnected") transientPromptIds.add(stableRequestId)
                     try {
+                        val revision = drafts.revision(draftScope)
+                        withContext(Dispatchers.IO) { drafts.markSubmitting(draftScope, revision, stableRequestId) }
                         val sentRequestId = if (target != null) {
                             responseConversationIds[stableRequestId] = target.id
                             transport.sendPromptTo(target, text, attachments, stableRequestId)
@@ -1283,6 +1298,7 @@ private fun KompiApp(
                         } else {
                             transport.sendPromptWithAttachments(text, Delivery.FollowUp, attachments, onProgress, stableRequestId)
                         }
+                        drafts.finishSubmission(draftScope, stableRequestId)
                         responseTokens[sentRequestId] = responseStream.generationToken()
                         sentRequestId
                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
@@ -1748,14 +1764,10 @@ internal fun ConversationScreen(
     },
 ) {
     val artifactPicker = rememberArtifactPicker(onDownloadArtifact)
-    val composerSaver = remember {
-        androidx.compose.runtime.saveable.mapSaver(
-            save = { mapOf("text" to it.text, "revision" to it.revision) },
-            restore = { TypedComposerState(it["text"] as String, it["revision"] as Long) },
-        )
-    }
-    var composer by rememberSaveable(stateSaver = composerSaver) { mutableStateOf(TypedComposerState(initialDraft)) }
-    val composerFieldState = rememberTextFieldState(initialText = composer.text)
+    // SharedPreferences is the durable draft source. A saved-instance copy can predate the
+    // Room enqueue and resurrect the submitted version after task/process restoration.
+    var composer by remember { mutableStateOf(TypedComposerState(initialDraft)) }
+    val composerFieldState = remember { androidx.compose.foundation.text.input.TextFieldState(initialText = initialDraft) }
     val currentDraftChanged by rememberUpdatedState(onDraftChanged)
     // TextFieldState owns edits. Feeding an asynchronously observed draft back
     // into it overwrites newer IME edits and loses characters under load.
@@ -2428,6 +2440,7 @@ internal fun ConversationScreen(
                             val submitted = composer.copy(text = composerFieldState.text.toString()).snapshot()
                             val submittedAttachments = draftAttachments.toList()
                             if ((submitted.text.isNotBlank() || submittedAttachments.isNotEmpty()) && canSend && (submittedAttachments.isEmpty() || canSendAttachments) && submitted.revision !in submittingRevisions) {
+                                currentDraftChanged(submitted.sourceText) // Flush any unobserved final IME edit before binding its revision.
                                 val tappedRequestId = com.kompi.app.diagnostics.ChatTiming.uuid()
                                 com.kompi.app.diagnostics.ChatTiming.record(com.kompi.app.diagnostics.ChatTiming.Stage.PhoneTap, request = tappedRequestId)
                                 submittingRevisions.add(submitted.revision)

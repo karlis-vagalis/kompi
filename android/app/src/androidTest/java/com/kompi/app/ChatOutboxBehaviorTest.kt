@@ -45,6 +45,37 @@ class ChatOutboxBehaviorTest {
         cursor, false, false, requests, emptyList(), EffectiveSettings(1800, 604800), "live",
     )
 
+    @Test fun interruptedDraftSubmissionClearsOnlyItsDurablyEnqueuedVersion() = runBlocking {
+        val scope = "host-a/" + UUID.randomUUID()
+        val drafts = com.kompi.app.chat.ConversationDrafts(context)
+        fun begin(id: String) {
+            drafts.save(scope, "First draft")
+            drafts.markSubmitting(scope, drafts.revision(scope), id)
+        }
+        suspend fun restore() = com.kompi.app.chat.ConversationDrafts(context).restore(scope) {
+            repository.requestState("host-a", it) != null
+        }
+
+        begin("before-commit")
+        reopen()
+        assertEquals("First draft", restore()) // Death before enqueue: preserve unsent text.
+        begin("committed")
+        queue("committed", "First draft")
+        event("1", "committed", "completed")
+        reopen()
+        assertEquals("", restore()) // Outbox may be gone; the enqueue receipt is durable.
+        assertEquals("", restore())
+
+        begin("edited")
+        queue("edited", "First draft")
+        drafts.save(scope, "Something new")
+        drafts.save(scope, "First draft") // Same text, different version.
+        drafts.finishSubmission(scope, "edited") // A late callback must not delete it.
+        reopen()
+        assertEquals("First draft", restore())
+        drafts.save(scope, "")
+    }
+
     @Test fun c2_q2_a5_diskReopenPreservesCompositionOrderContentAndConfiguration() = runBlocking {
         queue("a", "First\nLatviešu 🎧", time = 1000)
         queue("b", time = 10) // A wall-clock correction must not reorder intent.

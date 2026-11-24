@@ -33,11 +33,40 @@ internal class ConversationDrafts(context: Context) {
 
     fun scope(target: ConversationTarget): String = "${target.hostId}/${target.id}"
     fun load(scope: String?) = prefs.getString(draftKey(scope), "").orEmpty()
-    fun save(scope: String?, text: String) {
-        prefs.edit().apply {
+    fun save(scope: String?, text: String) = synchronized(prefs) {
+        if (load(scope) == text) return@synchronized
+        // A real edit starts a new draft version, even if a subsequent edit restores the
+        // exact submitted text. Duplicate Compose observations are not edits.
+        prefs.edit().remove(submissionKey(scope)).putLong(revisionKey(scope), revision(scope) + 1).apply {
             if (text.isBlank()) remove(draftKey(scope)) else putString(draftKey(scope), text)
         }.apply()
     }
+
+    fun submission(scope: String?): String? = prefs.getString(submissionKey(scope), null)
+
+    fun revision(scope: String?) = prefs.getLong(revisionKey(scope), 0L)
+
+    /** Called before enqueue. The request ID names this particular draft version. commit()
+     * must finish before Room or the transport can publish the prompt to the host. */
+    fun markSubmitting(scope: String?, expectedRevision: Long, requestId: String) = synchronized(prefs) {
+        if (revision(scope) != expectedRevision) return@synchronized // Already editing the next draft.
+        check(prefs.edit().putString(submissionKey(scope), requestId).commit()) { "Could not save draft submission" }
+    }
+
+    suspend fun restore(scope: String?, enqueued: suspend (String) -> Boolean): String {
+        val request = submission(scope)
+        if (request != null && enqueued(request)) finishSubmission(scope, request)
+        return load(scope)
+    }
+
+    fun finishSubmission(scope: String?, requestId: String) = synchronized(prefs) {
+        if (submission(scope) == requestId) {
+            prefs.edit().remove(submissionKey(scope)).remove(draftKey(scope)).apply()
+        }
+    }
+
+    private fun revisionKey(scope: String?) = "draftRevision/${draftKey(scope)}"
+    private fun submissionKey(scope: String?) = "draftSubmission/${draftKey(scope)}"
 
     fun migrateLegacyDraft(scope: String) {
         val legacy = load(null)
