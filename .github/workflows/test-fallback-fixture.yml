@@ -1,0 +1,34 @@
+name: Release graph fallback fixture
+on:
+  push:
+    branches: [test/release-graph-v015]
+permissions: {}
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    outputs:
+      promoted: ${{ steps.test.outputs.promoted }}
+    steps:
+      - id: test
+        run: echo 'promoted=false' >> "$GITHUB_OUTPUT"
+  build:
+    needs: promote
+    if: needs.promote.outputs.promoted == 'false'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "build fixture ran"
+  sign:
+    needs: [promote, build]
+    if: |
+      !cancelled() && needs.promote.result == 'success' &&
+      ((needs.promote.outputs.promoted == 'true' && needs.build.result == 'skipped') ||
+       (needs.promote.outputs.promoted == 'false' && needs.build.result == 'success'))
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "sign fixture ran"
+  publish:
+    needs: sign
+    if: ${{ !cancelled() && needs.sign.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "publish fixture ran"
