@@ -1,4 +1,5 @@
 import { preparationTiming } from "./conversations/prepare-timing.ts";
+import { phoneProjection } from "./phone-projection.js";
 import { PiReadPressure } from "./pi-read-pressure.js";
 import { seal, open } from "./conversations/tool-frame.js";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -224,7 +225,11 @@ const factory = new PiRpcSessionFactory({
   event: (conversationId, sessionId, epoch, sequence, event, pause) => {
     if (lifetime !== "running" || (liveSession?.session.epoch === epoch && sessionDisposals.has(liveSession.session))) return;
     const requestId = liveSession?.conversationId === conversationId ? liveSession.active?.requestId : undefined;
-    void queuePiRecord(conversationId, sessionId, epoch, sequence, "event", event, requestId ?? null, pause).catch(() => undefined);
+    const update = event.assistantMessageEvent;
+    const activityStart = event.type === "message_update" && update !== null && typeof update === "object" &&
+      "type" in update && (update.type === "toolcall_start" || update.type === "thinking_start");
+    const timedEvent = activityStart ? { kompiActivityObservedMs: Date.now(), ...event } : event;
+    void queuePiRecord(conversationId, sessionId, epoch, sequence, "event", timedEvent, requestId ?? null, pause).catch(() => undefined);
     if (liveSession && requestId && (event.type === "message_end" || event.type === "agent_settled")) {
       const settled = event.type === "agent_settled";
       if (settled) liveSession.active!.settlementScheduled = true;
@@ -308,7 +313,7 @@ let piOutput: Promise<void> = Promise.resolve();
 const piPressure = new PiReadPressure();
 function queuePiRecord(conversationId: string, sessionId: string, epoch: string, sequence: number, kind: "event" | "snapshot" | "entries" | "settled", value: unknown, requestId: string | null, pause?: (paused: boolean) => void): Promise<void> {
   if (lifetime !== "running") return Promise.resolve();
-  const json = JSON.stringify(value);
+  const json = JSON.stringify(phoneProjection(kind, value));
   const bytes = Buffer.byteLength(json);
   if (bytes > 64 * 1024 * 1024 || piPressure.bytes + bytes > 128 * 1024 * 1024) {
     failClosed("response-backpressure-overflow");

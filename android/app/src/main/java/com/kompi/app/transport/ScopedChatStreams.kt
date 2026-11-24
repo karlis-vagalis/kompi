@@ -3,15 +3,12 @@ package com.kompi.app.transport
 import android.util.Log
 import com.kompi.app.protocol.generated.EnvelopeV3
 import com.kompi.app.protocol.generated.FrameCodec
-import com.kompi.app.protocol.generated.MAX_PAYLOAD
 import com.kompi.app.protocol.generated.PiFrame
 import com.kompi.app.protocol.generated.WireCodec
 import com.kompi.app.protocol.generated.WireFormatException
 import com.kompi.app.protocol.generated.WireMessage as Message
 import computer.iroh.Connection
-import computer.iroh.RecvStream
 import computer.iroh.SendStream
-import java.nio.ByteBuffer
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -107,12 +104,13 @@ internal class ScopedChatStreams(
                     stream.send().use { send ->
                         stream.recv().use { recv ->
                             try {
+                                val frames = LiveFrameReader(recv::read)
                                 output = send
                                 withTimeout(5_000) {
                                     val id = "chat-open-${UUID.randomUUID()}"
                                     send.setPriority(1)
                                     send.writeAll(FrameCodec.frame(WireCodec.encode(EnvelopeV3(id = id, message = Message.ConversationStreamOpen(chat)))))
-                                    val reply = recv.envelope()
+                                    val reply = WireCodec.decode(frames.next())
                                     val ack = reply.message as? Message.Ack
                                     if (reply.id != id || ack?.state != "accepted" || ack.conversationId != chat) throw RouteLost()
                                     synchronized(lock) {
@@ -127,7 +125,7 @@ internal class ScopedChatStreams(
                                     Log.i(TAG, "bound chat=$chat")
                                 }
                                 while (isCurrent()) {
-                                    val envelope = recv.envelope()
+                                    val envelope = WireCodec.decode(frames.next())
                                     if (!isCurrent()) break
                                     onReply(this, envelope)
                                 }
@@ -358,9 +356,5 @@ internal class ScopedChatStreams(
         }
     }
 
-    private suspend fun RecvStream.envelope(): EnvelopeV3 {
-        val size = ByteBuffer.wrap(readExact(4u)).int
-        if (size !in 1..MAX_PAYLOAD) throw WireFormatException("Invalid conversation frame size")
-        return WireCodec.decode(readExact(size.toUInt()))
-    }
+
 }

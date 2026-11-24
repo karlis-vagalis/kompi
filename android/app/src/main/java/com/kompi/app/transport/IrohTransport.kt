@@ -223,6 +223,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
     private val closing = java.util.concurrent.atomic.AtomicBoolean(false)
     private val pushSyncMutex = Mutex()
     @Volatile private var pushConnectionSender: PushConnectionSender? = null
+    @Volatile private var livePrewarmSupported = false
     @Volatile private var unifiedPushSupported = false
     @Volatile private var outboxConnection: OutboxConnection? = null
     private val promptAcknowledgements = ConcurrentHashMap<String, CompletableDeferred<AckState>>()
@@ -476,11 +477,9 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
                         _state.value = if (confirmed) "Reconnecting" else "Waiting for pairing confirmation"
                         var pairSent = false
                         val recv = stream.recv()
+                        val frames = LiveFrameReader(recv::read)
                         while (isCurrent(generation)) {
-                            val sizeBytes = recv.readExact(4u)
-                            val size = ByteBuffer.wrap(sizeBytes).order(ByteOrder.BIG_ENDIAN).int
-                            if (size !in 1..MAX_PAYLOAD) throw WireFormatException("Invalid network frame length")
-                            val envelope = V3WireCodec.decode(recv.readExact(size.toUInt()))
+                            val envelope = V3WireCodec.decode(frames.next())
                             if (!isCurrent(generation) || activeConnection !== conn) break
                             val message = envelope.message
                             when (message) {
@@ -580,6 +579,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
                                     _phoneConversationsSupported.value = peerSupportsPhoneConversations
                                     _piArchiveSupported.value = "pi-archive" in message.capabilities
                                     _piHostHistorySupported.value = "pi-host-history" in message.capabilities
+                                    livePrewarmSupported = "live-prewarm-v1" in message.capabilities
                                     _concurrentConversationsSupported.value = "concurrent-conversations" in message.capabilities
                                     store.rememberConcurrentSupport(peerId, _concurrentConversationsSupported.value)
                                     _conversationContinueSupported.value = "conversation-continue" in message.capabilities
@@ -860,11 +860,12 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
     private suspend fun receivePiFrame(
         outbox: OutboxConnection, route: ScopedChatStreams.Route?, frame: com.kompi.app.protocol.generated.PiFrame,
     ) {
+        val receivedMs = System.currentTimeMillis()
         val projected = synchronized(lifecycleLock) {
             val target = focusedChat
             if (!outbox.isCurrent() || (target != null && target.hostId != outbox.hostId)) return
             fun apply(): Boolean {
-                piSession.accept(frame, outbox.audit.id, allowUnobservedPrefix = target != null)
+                piSession.accept(frame, outbox.audit.id, allowUnobservedPrefix = target != null, receivedMs = receivedMs)
                 retireOtherConversationTools()
                 return frame.kind == "snapshot" && frame.last && piSession.installedSnapshot(frame)
             }
@@ -1293,6 +1294,19 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
     }
 
     /** Close only the current idle runtime; its Pi transcript remains on the host. */
+    fun prewarmLiveDraft() {
+        val target = focusedChat?.takeIf { it.createIfMissing } ?: return
+        val connection = outboxConnection ?: return
+        if (!livePrewarmSupported) return
+        scope.launch {
+            try {
+                if (connection.isCurrent() && focusedChat == target)
+                    connection.sendChat(target.id, id("live-prewarm"), V3Message.ConversationActivate(target.id, null))
+            } catch (cancelled: CancellationException) { throw cancelled }
+              catch (_: Exception) { /* Cold dispatch remains available. */ }
+        }
+    }
+
     suspend fun startNewChat() = agentSessionMutex.withLock {
         check(ready && _state.value == "Live" && _phoneConversationsSupported.value) {
             "Connect to your computer before starting a new chat."
