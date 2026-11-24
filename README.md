@@ -24,9 +24,14 @@ I built Kompi (*Pi companion*) because not everything I want from Pi is a coding
 
 ## First chat
 
-<a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/karlis-vagalis/kompi"><img src="docs/images/obtainium.png" width="161" alt="Add Kompi to Obtainium for Android updates"></a>
+1. **ARM64 phone:** [Download `kompi.apk`](https://github.com/karlis-vagalis/kompi/releases/latest/download/kompi.apk) and open it to install. If Android asks, allow installation from the app you opened it with.
 
-1. On your phone, add Kompi to Obtainium above or [download the Android APK](https://github.com/karlis-vagalis/kompi/releases/latest/download/kompi.apk) directly. Open the APK to install it. If Android asks, allow installation from the app you opened it with.
+   **x86-64 emulator or device only:** [Download `kompi-x86_64.apk`](https://github.com/karlis-vagalis/kompi/releases/latest/download/kompi-x86_64.apk) instead.
+
+   **Obtainium updates:** The badge opens the GitHub source; it does not select an APK. On ARM64, set **Filter links by regex** to `^kompi\.apk$` before adding. If you already track Kompi, edit the existing entry and set the same filter before updating. On x86-64 use `^kompi-x86_64\.apk$` instead. Leave the filter uninverted.
+
+   <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/karlis-vagalis/kompi"><img src="docs/images/obtainium.png" width="161" alt="Open the Kompi GitHub source in Obtainium"></a>
+
 2. On your x86-64 computer, install Pi, Node.js 22.19+ and Bun (Linux also needs `flock`). Install the daemon for your platform:
 
    **GNU Linux**
