@@ -114,7 +114,7 @@ class ChatTransportContinuityTest {
                 { error("Unexpected archive read") }, timeoutMs = 2_000) }
             val echoes = remember(selected?.id) { LocalMessageEchoes() }.reconcile(pane.view.conversationId,
                 local.outbox.map { it.requestId to it.text }, local.requests)
-            val lines = buildTranscriptProjection(pane.view, echoes, local.requests, emptyList(), outboxStates = local.outbox.associate { it.requestId to it.state }, observedWrites = net.observedWrites.collectAsState().value.keys).active
+            val lines = buildTranscriptProjection(pane.view, echoes, local.requests, emptyList(), outboxStates = local.outbox.associate { it.requestId to it.state }, observedWrites = net.observedWrites.collectAsState().value.keys, snapshotCompletions = pane.snapshotCompletions).active
             ChatBehaviorSurface(history = pane, connection = phase, transcript = lines,
                 onSend = { text, files -> net.sendPromptTo(checkNotNull(selected), text, files, id) })
         }

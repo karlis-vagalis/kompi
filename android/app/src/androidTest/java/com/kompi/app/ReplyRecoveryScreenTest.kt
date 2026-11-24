@@ -68,8 +68,10 @@ class ReplyRecoveryScreenTest {
         compose.onNodeWithText("Couldn’t load the reply.").assertDoesNotExist()
         // Old archive text must not erase a different completed prompt absent from that read.
         val repeated = buildTranscriptProjection(view.copy(lines = listOf(PiSessionStore.Line("old-entry", "Continue", true))),
-            listOf("missing" to "Continue"), emptyList(), emptyList())
-        assertEquals(listOf("old-entry", "user:missing"), repeated.active.map { it.key })
+            listOf("missing" to "Continue"), listOf(com.kompi.app.data.RequestStateRow("host-a", "missing", target.id, "completed")), emptyList(),
+            snapshotCompletions = setOf("missing"))
+        assertEquals(listOf("old-entry"), repeated.active.filter { it.fromUser }.map { it.key })
+        assertEquals("Continue", repeated.active.single { it.unlinkedReceipt }.text)
         compose.onNodeWithContentDescription("Waiting for reply").assertDoesNotExist()
     }
 

@@ -558,10 +558,10 @@ private fun KompiApp(
         value = pendingFileIds.mapValues { (_, ids) -> ids.mapNotNull { cached[it]?.let(MessageAttachment::Local) } }
     }
     val localEchoes = remember(selectedMachineKey, focusedChat?.id) { LocalMessageEchoes() }
-    val transcriptProjection = remember(piSession, historyPane.coveredCompletions, pendingPiPrompts, displayedRequests, deliveryNotices, pendingAttachments, pendingFileIds, attachmentDispatchStages, heldPromptIds, scopedOutbox, observedWrites) {
+    val transcriptProjection = remember(piSession, historyPane.snapshotCompletions, pendingPiPrompts, displayedRequests, deliveryNotices, pendingAttachments, pendingFileIds, attachmentDispatchStages, heldPromptIds, scopedOutbox, observedWrites) {
         val echoes = localEchoes.reconcile(piSession.conversationId, pendingPiPrompts, displayedRequests)
         buildTranscriptProjection(piSession, echoes.filterNot { it.first in heldPromptIds }, displayedRequests.filterNot { it.requestId in heldPromptIds }, deliveryNotices,
-            pendingAttachments, attachmentDispatchStages, scopedOutbox.associate { it.requestId to it.state }, observedWrites.keys)
+            pendingAttachments, attachmentDispatchStages, scopedOutbox.associate { it.requestId to it.state }, observedWrites.keys, historyPane.snapshotCompletions)
     }
     val transcript = transcriptProjection.all
     val activeTranscript = transcriptProjection.active
@@ -1585,7 +1585,7 @@ private fun sessionTime(timestamp: String?): String? = timestamp?.let { value ->
 private val titleWhitespace = Regex("\\s+")
 private fun draftTitle(text: String?): String? = text?.trim()?.replace(titleWhitespace, " ")?.take(120)?.takeIf { it.isNotBlank() }
 
-internal data class TranscriptLine(val text: String, val fromUser: Boolean, val key: String, val sessionId: String? = null, val conversationId: String? = null, val isActivity: Boolean = false, val isDivider: Boolean = false, val waitingForReply: Boolean = false, val animateArrivals: Boolean = false, val piDetails: com.kompi.app.transport.PiSessionStore.Details? = null,
+internal data class TranscriptLine(val text: String, val fromUser: Boolean, val key: String, val sessionId: String? = null, val conversationId: String? = null, val isActivity: Boolean = false, val isDivider: Boolean = false, val unlinkedReceipt: Boolean = false, val waitingForReply: Boolean = false, val animateArrivals: Boolean = false, val piDetails: com.kompi.app.transport.PiSessionStore.Details? = null,
     val body: String = text, val attachments: List<MessageAttachment> = emptyList(),
     val attachmentDispatch: AttachmentDispatchStage? = null,
     val replyDetail: String? = null, val deliveryStatus: OutgoingMessageStatus? = null, val artifact: OfferedArtifact? = null)
@@ -1603,6 +1603,7 @@ internal fun buildTranscriptProjection(
     attachmentDispatchStages: Map<String, AttachmentDispatchStage> = emptyMap(),
     outboxStates: Map<String, String> = emptyMap(),
     observedWrites: Set<String> = emptySet(),
+    snapshotCompletions: Set<String> = emptySet(),
 ): TranscriptProjection {
     val states = requests.associateBy { it.requestId }
     fun replyDetail(id: String) = when (states[id]?.outcome) {
@@ -1627,6 +1628,10 @@ internal fun buildTranscriptProjection(
         val state = states[id]
         if (!belongsHere(state?.conversationId, id)) continue
         if (state?.outcome in setOf("cancelled", "discarded")) continue
+        if (state?.outcome == "completed" && id in snapshotCompletions) {
+            lines.add(TranscriptLine(body, false, "receipt:$id", conversationId = pi.conversationId, unlinkedReceipt = true))
+            continue
+        }
         val status = when {
             state?.outcome == "local-failure" -> OutgoingMessageStatus.LocalFailure
             state?.outcome == "rejected" -> OutgoingMessageStatus.Failed
@@ -2259,6 +2264,16 @@ internal fun ConversationScreen(
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             HorizontalDivider(Modifier.weight(1f)); Text(line.text, Modifier.padding(horizontal = 10.dp), style = KompiUi.typography.labelSmall, color = KompiUi.colors.onSurfaceVariant); HorizontalDivider(Modifier.weight(1f))
                         }
+                    } else if (line.unlinkedReceipt) {
+                        var open by remember(line.key) { mutableStateOf(false) }
+                        TextButton(onClick = { open = true }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Message details") }
+                        if (open) AlertDialog(onDismissRequest = { open = false }, title = { Text("Message details") },
+                            text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(line.text)
+                                Text("Delivery: Accepted by your computer")
+                                Text("Reply: Reported complete")
+                                Text("Kompi couldn’t link this request to a specific message in the conversation.")
+                            } }, confirmButton = { TextButton(onClick = { open = false }) { Text("Close") } })
                     } else if (line.waitingForReply) {
                         if (connectionState == "Live" && !historyLoadError && !recoveringHistory && !loadingHistory) ReplyPendingRow()
                     } else if (line.artifact != null) {

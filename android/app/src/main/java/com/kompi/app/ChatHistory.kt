@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.first
 
-internal class ChatHistory(val view: PiSessionStore.View, val loading: Boolean, val error: Boolean, val coveredCompletions: Set<String>, val fetching: Boolean, val checkingReply: Boolean, val canCheck: Boolean, val retry: () -> Unit)
+internal class ChatHistory(val view: PiSessionStore.View, val loading: Boolean, val error: Boolean, val coveredCompletions: Set<String>, val snapshotCompletions: Set<String>, val fetching: Boolean, val checkingReply: Boolean, val canCheck: Boolean, val retry: () -> Unit)
 
 /** Promotion changes only whether future commands may create the runtime. The pane remains selected. */
 @Composable
@@ -39,6 +39,7 @@ internal fun rememberChatHistory(
     val scopeKey = focusedChat?.let { it.hostId to it.id }
     var coveredCompletions by remember(scopeKey) { mutableStateOf(emptySet<String>()) }
     var missingReply by remember(scopeKey) { mutableStateOf(false) }
+    var snapshotCompletions by remember(scopeKey) { mutableStateOf(emptySet<String>()) }
     var fetching by remember(scopeKey) { mutableStateOf(false) }
     var errorRevision by remember(scopeKey) { mutableStateOf<Long?>(null) }
     val snapshotError = errorRevision != null && (!active || errorRevision == livePi.snapshotRevision)
@@ -67,6 +68,7 @@ internal fun rememberChatHistory(
                 value?.takeIf { it.conversationId == target.id }?.let { snapshot ->
                     val lastUser = snapshot.lines.indexOfLast { it.fromUser }
                     coveredCompletions = finishedRequests.intersect(snapshot.readableReplies)
+                    snapshotCompletions = finishedRequests.takeIf { lastUser >= 0 }.orEmpty()
                     // A valid snapshot containing only the question still isn't an answer.
                     // An unlinked archive entry is not evidence about a particular request.
                     val trailing = snapshot.lines.getOrNull(lastUser)?.key?.takeIf { it.startsWith("user:") }?.removePrefix("user:")
@@ -118,5 +120,5 @@ internal fun rememberChatHistory(
     }
     return ChatHistory(piSession, !snapshotError && !openedAsDraft && focusedChat?.createIfMissing == false &&
         piSession.lines.isEmpty() && (fetching || piSession.loading) && concurrentSupported && connectionState == "Live",
-        snapshotError, coveredCompletions, fetching, missingReply || (finishedRequests - coveredCompletions).isNotEmpty(), focusedChat != null && concurrentSupported && (active || (!focusedChat.createIfMissing && piArchiveSupported)), { snapshotRetry++ })
+        snapshotError, coveredCompletions, snapshotCompletions, fetching, missingReply || (finishedRequests - coveredCompletions).isNotEmpty(), focusedChat != null && concurrentSupported && (active || (!focusedChat.createIfMissing && piArchiveSupported)), { snapshotRetry++ })
 }
