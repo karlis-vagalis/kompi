@@ -24,7 +24,7 @@ I built Kompi (*Pi companion*) because not everything I want from Pi is a coding
 
 ## First chat
 
-<a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.kompi.app%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2Fkarlis-vagalis%2Fkompi%22%2C%22author%22%3A%22karlis-vagalis%22%2C%22name%22%3A%22Kompi%22%7D"><img src="docs/images/obtainium.png" width="161" alt="Add Kompi to Obtainium for Android updates"></a>
+<a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/karlis-vagalis/kompi"><img src="docs/images/obtainium.png" width="161" alt="Add Kompi to Obtainium for Android updates"></a>
 
 1. On your phone, add Kompi to Obtainium above or [download the Android APK](https://github.com/karlis-vagalis/kompi/releases/latest/download/kompi.apk) directly. Open the APK to install it. If Android asks, allow installation from the app you opened it with.
 2. On your x86-64 computer, install Pi, Node.js 22.19+ and Bun (Linux also needs `flock`). Install the daemon for your platform:
