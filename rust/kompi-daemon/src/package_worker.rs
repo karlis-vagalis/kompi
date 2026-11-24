@@ -67,12 +67,14 @@ fn install(base: &Path) -> Result<PathBuf> {
         Ok(_) => verify(&destination)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let stage = base.join(format!(".kompi-stage-{}", uuid::Uuid::new_v4()));
-            let mut builder = fs::DirBuilder::new();
+            let builder = fs::DirBuilder::new();
             #[cfg(unix)]
-            {
+            let builder = {
                 use std::os::unix::fs::DirBuilderExt;
+                let mut builder = builder;
                 builder.mode(0o700);
-            }
+                builder
+            };
             builder
                 .create(&stage)
                 .context("create staging directory beside installed executable")?;
