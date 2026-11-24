@@ -40,6 +40,7 @@ import com.kompi.app.protocol.generated.PiUiAnswer
 import com.kompi.app.security.SecureStore
 import com.kompi.app.stream.AssistantSpeechStream
 import com.kompi.app.stream.ActivitySpeech.Gate as ActivitySpeechGate
+import com.kompi.app.stream.ActivitySpeechText
 import com.kompi.app.transport.Delivery
 import com.kompi.app.transport.IrohTransport
 import com.kompi.app.transport.PiDialogRequest
@@ -185,9 +186,11 @@ class AssistantConversationService : Service(), LifecycleOwner {
         val network = IrohTransport(applicationContext, store, LocalRepository(db, store)).also { transport = it }
         val activitySpeech = com.kompi.app.stream.ActivitySpeech(
             // Thinking filler is optional; do not admit it into an uninitialized engine.
-            speak = { id, phrase ->
-                engine.state.value is KokoroTtsState.Ready &&
-                    engine.enqueue(id, 0, phrase).also { if (it) engine.finishRequest(id) }
+            speak = { id, phrase, isLiveToolCue ->
+                val queued = if (engine.state.value !is KokoroTtsState.Ready) false
+                    else if (isLiveToolCue) engine.enqueueLiveToolCue(id, phrase)
+                    else engine.enqueue(id, 0, phrase)
+                queued.also { if (it) engine.finishRequest(id) }
             },
             stop = { id -> engine.stop(id) },
         )
@@ -285,7 +288,7 @@ class AssistantConversationService : Service(), LifecycleOwner {
                         else if (event.activity == "Thinking" || event.activity == "Using tools" || event.activity.startsWith("Tool: ")) live.updateActivity(event.id, event.activity)
                         com.kompi.app.diagnostics.SpeechAudit.record(event.id, stage = "activity_received",
                             detail = "kind=${when { event.activity == "Thinking" -> "thinking_start"; event.activity.startsWith("Thinking: ") -> "thinking_heading"; event.activity == "Using tools" -> "tools_cue"; else -> "tool" }}")
-                        activitySpeech.offer(event.id, event.activity, settings.getString("thinkingSpeechPrefix", "One second, I'm").orEmpty(), allowTools = true,
+                        activitySpeech.offer(event.id, event.activity, ActivitySpeechText.read(settings), allowTools = true,
                             gate = activitySpeechGate())
                     }
                     is IrohTransport.Event.Reply -> if (event.id in requests) {

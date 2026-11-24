@@ -10,12 +10,12 @@ import java.security.MessageDigest
 object SpeechAudit {
     sealed interface Cue {
         data object Thinking : Cue
-        data object Tools : Cue
+        data class Tools(val messageFingerprint: String) : Cue
         data class Title(val ordinal: Int, val fingerprint: String) : Cue
     }
     sealed interface Source {
         data class Reply(val start: Int, val end: Int, val fingerprint: String) : Source
-        data class Activity(val cue: Cue, val prefixFingerprint: String) : Source
+        data class Activity(val cue: Cue, val prefixFingerprint: String?) : Source
     }
     data class Entry(val elapsedMs: Long, val epochMs: Long, val requestId: String, val speechId: String,
         val sequence: Long?, val stage: String, val detail: String, val source: Source?)
@@ -50,7 +50,7 @@ object SpeechAudit {
         is Source.Activity -> JSONObject().put("kind", "activity").put("prefixFingerprint", source.prefixFingerprint).apply {
             when (val cue = source.cue) {
                 Cue.Thinking -> { put("cue", "thinking"); put("wordingVersion", 1) }
-                Cue.Tools -> { put("cue", "using_tools"); put("wordingVersion", 1) }
+                is Cue.Tools -> { put("cue", "using_tools"); put("wordingVersion", 2); put("messageFingerprint", cue.messageFingerprint) }
                 is Cue.Title -> { put("cue", "title"); put("ordinal", cue.ordinal); put("titleFingerprint", cue.fingerprint) }
             }
         }

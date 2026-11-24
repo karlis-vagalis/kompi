@@ -1,0 +1,42 @@
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "check-merge-conflict", args = ["--assume-in-merge"] },
+  { id = "detect-private-key" },
+  { id = "check-case-conflict" },
+  { id = "check-illegal-windows-names" },
+  { id = "check-added-large-files", args = ["--maxkb=2048"] },
+  { id = "check-json" },
+  { id = "check-toml" },
+  { id = "check-yaml" },
+  { id = "trailing-whitespace", args = ["--markdown-linebreak-ext=md"] },
+  { id = "end-of-file-fixer" },
+]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "rust-warnings"
+name = "Check Rust workspace and test targets (deny warnings)"
+language = "system"
+entry = "cargo check --locked --workspace --all-targets"
+env = { RUSTFLAGS = "-Dwarnings" }
+files = '(^|/)(Cargo\.toml|Cargo\.lock|rust-toolchain(\.toml)?|\.cargo/config(\.toml)?)$|\.rs$'
+pass_filenames = false
+
+[[repos.hooks]]
+id = "daemon-tests"
+name = "Build and test the Bun daemon"
+language = "system"
+entry = '''bash -ec 'just sdk-build && cd daemon && bun test' '''
+files = '^daemon/(src/|test/|package\.json$|bun\.lock$|tsconfig[^/]*\.json$)'
+pass_filenames = false
+
+[[repos.hooks]]
+id = "extension-tests"
+name = "Typecheck and test the Pi extension"
+language = "system"
+entry = '''bash -ec 'just extension-typecheck && cd pi-extension && bun run test' '''
+files = '^pi-extension/(src/|test/|package\.json$|bun\.lock$|tsconfig[^/]*\.json$)'
+pass_filenames = false

@@ -36,6 +36,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.maxLength
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import com.kompi.app.audio.DictationTranscript
@@ -142,6 +143,7 @@ import com.kompi.app.transport.Delivery
 import com.kompi.app.transport.ResultState
 import com.kompi.app.stream.AssistantSpeechStream
 import com.kompi.app.stream.ActivitySpeech.Gate as ActivitySpeechGate
+import com.kompi.app.stream.ActivitySpeechText
 import com.kompi.app.attachments.AttachmentDraftStore
 import com.kompi.app.attachments.AttachmentShareIntake
 import com.kompi.app.attachments.AttachmentSharePayload
@@ -370,9 +372,9 @@ private fun KompiApp(
     var chatReadAloudEnabled by remember { mutableStateOf(settings.getBoolean("chatReadAloudEnabled", true)) }
     val currentChatReadAloudEnabled by rememberUpdatedState(chatReadAloudEnabled)
     var thinkingSpeechEnabled by remember { mutableStateOf(settings.getBoolean("thinkingSpeechEnabled", true)) }
-    var thinkingSpeechPrefix by remember { mutableStateOf(settings.getString("thinkingSpeechPrefix", "One second, I'm").orEmpty()) }
+    var activitySpeechText by remember(settings) { mutableStateOf(ActivitySpeechText.read(settings)) }
     val currentThinkingSpeechEnabled by rememberUpdatedState(thinkingSpeechEnabled)
-    val currentThinkingSpeechPrefix by rememberUpdatedState(thinkingSpeechPrefix)
+    val currentActivitySpeechText by rememberUpdatedState(activitySpeechText)
     val currentDestination by rememberUpdatedState(destination)
     val displayedId = focusedChat?.id ?: localUiState.local.activeConversationId
     val currentActiveConversationId by rememberUpdatedState(displayedId)
@@ -599,8 +601,9 @@ private fun KompiApp(
     val manualReadAloudReady = ttsEnabled && (kokoroState is KokoroTtsState.Ready || voiceCanRecover)
     val activitySpeech = remember(tts) {
         com.kompi.app.stream.ActivitySpeech(
-            speak = { id, phrase ->
-                tts.enqueue(id, 0, phrase).also { accepted ->
+            speak = { id, phrase, isLiveToolCue ->
+                val queued = if (isLiveToolCue) tts.enqueueLiveToolCue(id, phrase) else tts.enqueue(id, 0, phrase)
+                queued.also { accepted ->
                     if (accepted) tts.finishRequest(id)
                     android.util.Log.i("KompiActivitySpeech", "Filler enqueue: id=$id accepted=$accepted")
                 }
@@ -841,7 +844,7 @@ private fun KompiApp(
                     if (event.activity.startsWith("Thinking: ")) liveControllerRef.value?.updateThinkingTitle(event.id, event.activity.removePrefix("Thinking: "))
                     else if (event.activity == "Thinking" || event.activity == "Using tools" || event.activity.startsWith("Tool: ")) liveControllerRef.value?.updateActivity(event.id, event.activity)
                     activitySpeech.offer(
-                        event.id, event.activity, currentThinkingSpeechPrefix,
+                        event.id, event.activity, currentActivitySpeechText,
                         allowTools = pagerState.currentPage == AppPage.Live.ordinal,
                         gate = activitySpeechGate(event.id),
                     )
@@ -1245,7 +1248,7 @@ private fun KompiApp(
                 onLiveActiveChanged = { active ->
                     if (active) {
                         transport.prewarmLiveDraft()
-                        if (ttsEnabled && thinkingSpeechEnabled) tts.prepareToolCue(thinkingSpeechPrefix)
+                        if (ttsEnabled && thinkingSpeechEnabled) tts.prepareToolCue(activitySpeechText.toolPhrase)
                     }
                 },
                 liveContextKey = draftScope ?: selectedMachineKey,
@@ -1494,15 +1497,23 @@ private fun KompiApp(
                     if (!enabled && pagerState.currentPage != AppPage.Live.ordinal) responseStream.invalidate()
                 },
                 thinkingSpeechEnabled = thinkingSpeechEnabled,
-                thinkingSpeechPrefix = thinkingSpeechPrefix,
+                activitySpeechText = activitySpeechText,
                 onThinkingSpeechEnabled = { enabled ->
                     thinkingSpeechEnabled = enabled
                     if (!enabled) activitySpeech.invalidate()
                     settings.edit().putBoolean("thinkingSpeechEnabled", enabled).apply()
                 },
                 onThinkingSpeechPrefix = { prefix ->
-                    thinkingSpeechPrefix = prefix.take(39)
-                    settings.edit().putString("thinkingSpeechPrefix", thinkingSpeechPrefix).apply()
+                    if (prefix != activitySpeechText.thinkingPrefix) {
+                        ActivitySpeechText.saveThinkingPrefix(settings, prefix)
+                        activitySpeechText = activitySpeechText.copy(thinkingPrefix = prefix)
+                    }
+                },
+                onToolSpeechMessage = { message ->
+                    if (message != activitySpeechText.toolMessage) {
+                        ActivitySpeechText.saveToolMessage(settings, message)
+                        activitySpeechText = activitySpeechText.copy(toolMessage = message)
+                    }
                 },
                 speechMessage = previewSpeechMessage,
                 previewRequestId = previewRequestId,
@@ -2815,7 +2826,7 @@ private fun VoicePreviewVisualizer(phases: kotlinx.coroutines.flow.StateFlow<Kok
     )
 }
 @Composable
-private fun SettingsScreen(modifier: Modifier, theme: AppTheme, kokoroState: KokoroTtsState, ttsEnabled: Boolean, whistleModel: InstalledWhistleModel?, whistleModelChecked: Boolean, whistleDownloading: Boolean, modelStatus: String, whistleLanguage: String, speechMessage: String, previewRequestId: String?, playbackPhases: kotlinx.coroutines.flow.StateFlow<KokoroPlaybackPhase>, availableKokoroVoices: List<KokoroVoice>, selectedKokoroVoice: KokoroVoice?, onSelectKokoroVoice: (KokoroVoiceId) -> Unit, onTheme: (AppTheme) -> Unit, onTtsEnabled: (Boolean) -> Unit, onStopSpeech: () -> Unit, onPreviewVoice: () -> Unit, onWhistleLanguage: (String) -> Unit, onDownloadKokoro: () -> Unit, onCancelKokoroDownload: () -> Unit, onDownloadWhistle: () -> Unit, thinkingSpeechEnabled: Boolean, thinkingSpeechPrefix: String, onThinkingSpeechEnabled: (Boolean) -> Unit, onThinkingSpeechPrefix: (String) -> Unit, whistleVocabulary: WhistleVocabulary, onWhistleVocabulary: (WhistleVocabulary) -> Unit, speechInputEngine: SpeechInputEngine, parakeetState: ParakeetInstallState, onSpeechInputEngine: (SpeechInputEngine) -> Unit, onDownloadParakeet: () -> Unit, onCancelParakeetDownload: () -> Unit, chatReadAloudEnabled: Boolean, onChatReadAloudEnabled: (Boolean) -> Unit) {
+private fun SettingsScreen(modifier: Modifier, theme: AppTheme, kokoroState: KokoroTtsState, ttsEnabled: Boolean, whistleModel: InstalledWhistleModel?, whistleModelChecked: Boolean, whistleDownloading: Boolean, modelStatus: String, whistleLanguage: String, speechMessage: String, previewRequestId: String?, playbackPhases: kotlinx.coroutines.flow.StateFlow<KokoroPlaybackPhase>, availableKokoroVoices: List<KokoroVoice>, selectedKokoroVoice: KokoroVoice?, onSelectKokoroVoice: (KokoroVoiceId) -> Unit, onTheme: (AppTheme) -> Unit, onTtsEnabled: (Boolean) -> Unit, onStopSpeech: () -> Unit, onPreviewVoice: () -> Unit, onWhistleLanguage: (String) -> Unit, onDownloadKokoro: () -> Unit, onCancelKokoroDownload: () -> Unit, onDownloadWhistle: () -> Unit, thinkingSpeechEnabled: Boolean, activitySpeechText: ActivitySpeechText, onThinkingSpeechEnabled: (Boolean) -> Unit, onThinkingSpeechPrefix: (String) -> Unit, onToolSpeechMessage: (String) -> Unit, whistleVocabulary: WhistleVocabulary, onWhistleVocabulary: (WhistleVocabulary) -> Unit, speechInputEngine: SpeechInputEngine, parakeetState: ParakeetInstallState, onSpeechInputEngine: (SpeechInputEngine) -> Unit, onDownloadParakeet: () -> Unit, onCancelParakeetDownload: () -> Unit, chatReadAloudEnabled: Boolean, onChatReadAloudEnabled: (Boolean) -> Unit) {
     val context = LocalContext.current
     var route by remember { mutableStateOf(BluetoothAudioRoute.current(context)) }
     val bluetoothPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> route = if (granted) BluetoothAudioRoute.routeToBluetooth(context) else "Bluetooth permission denied" }
@@ -2827,13 +2838,15 @@ private fun SettingsScreen(modifier: Modifier, theme: AppTheme, kokoroState: Kok
     val vocabularyError = parsedVocabulary.exceptionOrNull()?.message
     val vocabularyChanged = parsedVocabulary.getOrNull()?.text != whistleVocabulary.text
     // The field owns IME edits; feeding persisted values back can overwrite newer keystrokes.
-    val thinkingPrefixField = rememberTextFieldState(thinkingSpeechPrefix)
+    val thinkingPrefixField = rememberTextFieldState(activitySpeechText.thinkingPrefix)
+    val toolMessageField = rememberTextFieldState(activitySpeechText.toolMessage)
     val currentPrefixChanged by rememberUpdatedState(onThinkingSpeechPrefix)
+    val currentToolMessageChanged by rememberUpdatedState(onToolSpeechMessage)
     LaunchedEffect(thinkingPrefixField) {
-        snapshotFlow { thinkingPrefixField.text.toString() }.collect { prefix ->
-            if (prefix.length > 39) thinkingPrefixField.edit { replace(39, length, "") }
-            else currentPrefixChanged(prefix)
-        }
+        snapshotFlow { thinkingPrefixField.text.toString() }.collect { currentPrefixChanged(it) }
+    }
+    LaunchedEffect(toolMessageField) {
+        snapshotFlow { toolMessageField.text.toString() }.collect { currentToolMessageChanged(it) }
     }
     val kokoroStatus = when (kokoroState) {
         KokoroTtsState.NotDownloaded -> "Not installed"
@@ -2958,19 +2971,38 @@ private fun SettingsScreen(modifier: Modifier, theme: AppTheme, kokoroState: Kok
             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("Speak activity titles", style = KompiUi.typography.titleSmall)
-                        Text("Short thinking titles play before reply audio.", style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
+                        Text("Speak activity updates", style = KompiUi.typography.titleSmall)
+                        Text("Speak thinking updates and, in Live, tool announcements.", style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
                     }
                     Switch(checked = thinkingSpeechEnabled, onCheckedChange = onThinkingSpeechEnabled,
-                        modifier = Modifier.semantics { contentDescription = "Speak activity titles while waiting" })
+                        modifier = Modifier.semantics { contentDescription = "Speak activity updates while waiting" })
                 }
-                OutlinedTextField(
-                    state = thinkingPrefixField,
-                    label = { Text("Activity speech prefix") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text("Example: ${thinkingSpeechPrefix.trim()} Reading activities.md", style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    OutlinedTextField(
+                        state = thinkingPrefixField,
+                        label = { Text("Thinking title prefix") },
+                        accessibilityLabel = "Thinking title prefix",
+                        inputTransformation = InputTransformation.maxLength(ActivitySpeechText.MaxThinkingPrefixLength),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text("Example: ${activitySpeechText.thinkingPhrase("checking the details")}",
+                        style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    OutlinedTextField(
+                        state = toolMessageField,
+                        label = { Text("Live tool-call message") },
+                        accessibilityLabel = "Live tool-call message",
+                        inputTransformation = InputTransformation.maxLength(ActivitySpeechText.MaxToolMessageLength),
+                        maxLines = 3,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text("Enter the full message to speak, or leave blank to use the default.",
+                        style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
+                    Text("Preview: ${activitySpeechText.toolPhrase.trim()}",
+                        style = KompiUi.typography.bodySmall, color = KompiUi.colors.onSurfaceVariant)
+                }
             }
         }
         KompiSection("Assistant activation") { AssistantSettings() }

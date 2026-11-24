@@ -1,12 +1,15 @@
 package com.kompi.app
 
+import android.content.SharedPreferences
 import androidx.activity.ComponentActivity
+import androidx.test.platform.app.InstrumentationRegistry
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import com.kompi.app.audio.AudioWaveform
 import com.kompi.app.audio.KokoroPlaybackPhase
 import com.kompi.app.live.LiveReadAlong
 import com.kompi.app.protocol.generated.PiFrame
 import com.kompi.app.stream.ActivitySpeech
+import com.kompi.app.stream.ActivitySpeechText
 import com.kompi.app.transport.PiSessionStore
 import org.json.JSONArray
 import org.json.JSONObject
@@ -29,10 +32,18 @@ class LivePiActivityBehaviorTest {
     private var gate = ActivitySpeech.Gate.Open
     private var sequence = 0L
     private val publicText = StringBuilder()
-    private val prefix = "One second, I'm"
+    private val prefix = "I'm"
+    private val toolMessage = "I'm checking a few things"
+    private val cacheEligibility = mutableListOf<Boolean>()
+    private lateinit var preferences: SharedPreferences
 
     @Before fun mountPipeline() {
-        activity = ActivitySpeech(speak = { id, text -> audio.add(id to text); true }, stop = { stopped.add(it) })
+        preferences = InstrumentationRegistry.getInstrumentation().targetContext
+            .getSharedPreferences("test-live-activity-${java.util.UUID.randomUUID()}", 0)
+        activity = ActivitySpeech(speak = { id, text, isLiveToolCue ->
+            cacheEligibility += isLiveToolCue
+            audio.add(id to text)
+        }, stop = { stopped.add(it) })
         h = LiveBehaviorHarness(compose)
         h.mount(); h.stopObserver = { activity.interrupt(it) }; h.start(); h.utterance(1, "Inspect the change")
         request = h.attempts.single().requestId
@@ -46,22 +57,26 @@ class LivePiActivityBehaviorTest {
                 settled = { id, _, _, _ -> activity.complete(id) },
                 thinkingTitle = { id, _, _, title ->
                     h.controller.updateThinkingTitle(id, title)
-                    activity.offer(id, "Thinking: $title", prefix, gate, allowTools = true)
+                    activity.offer(id, "Thinking: $title", ActivitySpeechText.read(preferences), gate, allowTools = true)
                 },
                 usingTools = { id, _, _ ->
                     h.controller.updateActivity(id, "Using tools")
-                    activity.offer(id, "Using tools", prefix, gate, allowTools = true)
+                    activity.offer(id, "Using tools", ActivitySpeechText.read(preferences), gate, allowTools = true)
                 },
                 liveActivity = { id, _, _, label ->
                     h.controller.updateActivity(id, label)
-                    activity.offer(id, label, prefix, gate, allowTools = true)
+                    activity.offer(id, label, ActivitySpeechText.read(preferences), gate, allowTools = true)
                 },
             )
             pi.bindConversation("voice-conversation")
             pi.accept(frame("snapshot", JSONObject().put("entries", JSONArray()).put("leafId", JSONObject.NULL), 0, null))
         }
     }
-    @After fun cleanup() { activity.invalidate(); h.close() }
+    @After fun cleanup() {
+        activity.invalidate()
+        h.close()
+        preferences.edit().clear().commit()
+    }
     private fun frame(kind: String, json: JSONObject, at: Long = sequence, owner: String? = request) = PiFrame(
         conversationId = "voice-conversation", epoch = "voice-epoch", json = json.toString(), kind = kind,
         last = true, part = 0, requestId = owner, sequence = at, sessionId = "voice-session",
@@ -108,11 +123,58 @@ class LivePiActivityBehaviorTest {
 
     @Test fun l55_toolAfterPlaybackDrainsSpeaksAgainWithoutInterveningText() {
         begin(); tool(0)
-        h.main { assertEquals(listOf("$prefix checking a few things"), audio.map { it.second }) }
+        h.main { assertEquals(listOf(toolMessage), audio.map { it.second }) }
         tool(1); tool(2)
-        h.main { assertEquals(listOf("$prefix checking a few things"), audio.map { it.second }); activity.onPlaybackDrained(audio.single().first) }
+        h.main { assertEquals(listOf(toolMessage), audio.map { it.second }); activity.onPlaybackDrained(audio.single().first) }
         tool(3); tool(4)
-        h.main { assertEquals(listOf("$prefix checking a few things", "$prefix checking a few things"), audio.map { it.second }) }
+        h.main { assertEquals(listOf(toolMessage, toolMessage), audio.map { it.second }) }
+    }
+
+    @Test fun savedPrefixAndFullToolMessageAreSelectedIndependently() {
+        // Same key as prior versions: even the former default may have been saved explicitly.
+        preferences.edit().putString("thinkingSpeechPrefix", "One second, I'm").commit()
+        val custom = "Let me look that up, then I'll get back to you."
+        ActivitySpeechText.saveToolMessage(preferences, custom)
+        begin(); update("thinking_start"); update("thinking_delta", delta = "**checking the details**\n")
+        tool(1)
+        h.main {
+            assertEquals(listOf("One second, I'm checking the details", custom), audio.map { it.second })
+            assertEquals(listOf(false, true), cacheEligibility)
+            audio.forEach { activity.onPlaybackDrained(it.first) }
+        }
+        ActivitySpeechText.saveThinkingPrefix(preferences, "")
+        ActivitySpeechText.saveToolMessage(preferences, "I found a lead.")
+        tool(2)
+        h.main { assertEquals("I found a lead.", audio.last().second) }
+        assertEquals("", ActivitySpeechText.read(preferences).thinkingPrefix)
+        assertEquals("I found a lead.", ActivitySpeechText.read(preferences).toolMessage)
+    }
+
+    @Test fun onlyLiveToolCueIsCacheEligibleEvenWhenThinkingTextMatches() {
+        ActivitySpeechText.saveThinkingPrefix(preferences, "")
+        ActivitySpeechText.saveToolMessage(preferences, "Checking the details")
+        begin(); update("thinking_start"); update("thinking_delta", delta = "**Checking the details**\n")
+        tool(1)
+        h.main {
+            assertEquals(listOf("Checking the details", "Checking the details"), audio.map { it.second })
+            assertEquals(listOf(false, true), cacheEligibility)
+        }
+    }
+
+    @Test fun blankToolMessageUsesDefaultButStillRespectsMuteAndLiveGate() {
+        ActivitySpeechText.saveToolMessage(preferences, " ")
+        begin()
+        h.main {
+            activity.offer(request, "Using tools", ActivitySpeechText.read(preferences), gate, allowTools = false)
+            gate = ActivitySpeech.Gate.Muted
+        }
+        tool(1)
+        h.main {
+            assertTrue(audio.isEmpty())
+            gate = ActivitySpeech.Gate.Open
+        }
+        tool(2)
+        h.main { assertEquals(listOf(toolMessage), audio.map { it.second }) }
     }
 
     @Test fun l56_latestHeadingFollowsFirstLineOnDrain() {
@@ -181,7 +243,7 @@ class LivePiActivityBehaviorTest {
         tool(1); tool(2); tool(3)
         update("thinking_delta", delta = "**A later heading must not build a backlog**\n")
         h.main {
-            assertEquals(listOf("$prefix Inspecting the change", "$prefix checking a few things"), audio.map { it.second })
+            assertEquals(listOf("$prefix Inspecting the change", toolMessage), audio.map { it.second })
             activity.complete(request)
             assertTrue(stopped.isEmpty())
             audio.indices.forEach { assertEquals(request, activity.playbackOwner(speakingCue(it))!!.requestId) }

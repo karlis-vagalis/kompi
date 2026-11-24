@@ -10,6 +10,7 @@ import android.os.Debug
 import android.os.PowerManager
 import android.os.Process
 import android.util.Log
+import com.kompi.app.BuildConfig
 import com.kompi.app.diagnostics.LocalDiagnostics
 import com.google.mediapipe.tasks.audio.texttospeech.SynthesisOptions
 import com.google.mediapipe.tasks.audio.texttospeech.TextToSpeech as MediaPipeTts
@@ -99,7 +100,7 @@ class KokoroTtsEngine(
     context: Context,
     private val playbackPhaseObserver: ((KokoroPlaybackPhase) -> Unit)? = null,
 ) : Closeable {
-    private data class Speech(val requestId: String, val sequence: Long, val generation: Long, val phrase: SynthesisText, val voiceId: KokoroVoiceId, val admission: SpeechOutputAdmission, val queuedAtNanos: Long = System.nanoTime()) {
+    private data class Speech(val requestId: String, val sequence: Long, val generation: Long, val phrase: SynthesisText, val voiceId: KokoroVoiceId, val admission: SpeechOutputAdmission, val isLiveToolCue: Boolean, val queuedAtNanos: Long = System.nanoTime()) {
         val text: String get() = phrase.source
     }
     private sealed interface SynthesisPacket
@@ -108,7 +109,7 @@ class KokoroTtsEngine(
     private class NoPcmSpeechException : IllegalStateException("Kokoro produced no PCM for a phrase")
     private enum class RequestDisposition { Accepting, Finished, Cancelled }
     private enum class EnqueueOutcome { Accepted, Backpressured, Unavailable }
-    private data class SpeechInput(val requestId: String, val sequence: Long, val phrase: SynthesisText)
+    private data class SpeechInput(val requestId: String, val sequence: Long, val phrase: SynthesisText, val isLiveToolCue: Boolean = false)
     private data class RequestState(
         var disposition: RequestDisposition,
         var nextSequence: Long,
@@ -167,6 +168,17 @@ class KokoroTtsEngine(
         }, "KokoroPlayback")
     }.asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + playbackDispatcher)
+    private val cueDiskCache = LiveToolCueCache(File(appContext.cacheDir, "live-tool-cue-pcm"))
+    private val pendingCueWrites = Channel<Pair<ToolCueKey, List<ToolCuePcm>>>(capacity = 1)
+    private val cueAudio = LiveToolCueAudio(cueDiskCache) { key, chunks -> pendingCueWrites.trySend(key to chunks) }
+    // Cache-only IO must not delay first PCM or the producer closing its playback channel.
+    init {
+        scope.launch(Dispatchers.IO) {
+            for ((key, chunks) in pendingCueWrites) cueDiskCache.write(key, chunks)
+        }
+    }
+    // Only read or replaced under runtimeMutex, alongside the runtime and RAM slot.
+    private var cueSynthesisIdentity: ToolCueSynthesisIdentity? = null
     private val queue = Channel<Speech>(capacity = MAX_QUEUE)
     private val queueSpace = Channel<Unit>(capacity = Channel.CONFLATED)
     private val requestStates = LinkedHashMap<String, RequestState>()
@@ -329,9 +341,15 @@ class KokoroTtsEngine(
      * Non-blocking phrase enqueue. Caller should send short sentence/clause chunks and must handle
      * false (model unavailable, invalid/oversize text, or bounded queue full) without blocking UI.
      */
-    fun enqueue(requestId: String, sequence: Long, text: String): Boolean {
-        val input = parseSpeechInput(requestId, sequence, text) ?: return false
-        val admission = try { SpeechOutputAdmission.capture(requestId, sequence) } catch (_: IllegalStateException) { return false }
+    fun enqueue(requestId: String, sequence: Long, text: String): Boolean =
+        parseSpeechInput(requestId, sequence, text)?.let(::enqueue) ?: false
+
+    /** Only the complete static tool-call message is eligible, regardless of repeated reply text. */
+    internal fun enqueueLiveToolCue(requestId: String, text: String): Boolean =
+        parseSpeechInput(requestId, 0, text)?.copy(isLiveToolCue = true)?.let(::enqueue) ?: false
+
+    private fun enqueue(input: SpeechInput): Boolean {
+        val admission = try { SpeechOutputAdmission.capture(input.requestId, input.sequence) } catch (_: IllegalStateException) { return false }
         return try { offerSpeech(input, admission, cancelIfFull = true) == EnqueueOutcome.Accepted }
         finally { admission.closePending() }
     }
@@ -361,7 +379,7 @@ class KokoroTtsEngine(
     }
 
     private fun offerSpeech(input: SpeechInput, admission: SpeechOutputAdmission, cancelIfFull: Boolean, expectedGeneration: Long? = null): EnqueueOutcome {
-        val (requestId, sequence, phrase) = input
+        val (requestId, sequence, phrase, isLiveToolCue) = input
         synchronized(stateLock) {
             if (closed.get() || !mutableEnabled.value || runtime == null || mutableState.value !is KokoroTtsState.Ready ||
                 (expectedGeneration != null && expectedGeneration != speechGeneration)
@@ -382,7 +400,7 @@ class KokoroTtsEngine(
                 return EnqueueOutcome.Unavailable
             }
             val transferred = admission.tryTransfer {
-                queue.trySend(Speech(requestId, sequence, speechGeneration, phrase, voiceId, admission)).isSuccess
+                queue.trySend(Speech(requestId, sequence, speechGeneration, phrase, voiceId, admission, isLiveToolCue)).isSuccess
             } ?: return EnqueueOutcome.Unavailable
             if (transferred) {
                 com.kompi.app.diagnostics.SpeechAudit.record(requestId, sequence, "queued", "source_characters=${phrase.source.length} input_characters=${phrase.input.length}")
@@ -540,7 +558,7 @@ class KokoroTtsEngine(
                     .setDelegate(delegate)
                     .build(),
                 defaultVoiceId = asset.voice,
-                speakingRate = 1.0f,
+                speakingRate = SPEAKING_RATE,
                 targetBucket = TARGET_BUCKET,
                 cacheDirectory = File(appContext.cacheDir, "kokoro-cache").apply { mkdirs() }.absolutePath,
             )
@@ -557,7 +575,16 @@ class KokoroTtsEngine(
                 val selectedVoice = voices.firstOrNull { it.id == preferredVoiceId } ?: defaultVoice
                 if (closed.get()) throw CancellationException("Kokoro engine closed during initialization")
                 runtime?.close()
-                preparedCue = null
+                cueAudio.clearRam()
+                cueSynthesisIdentity = ToolCueSynthesisIdentity(
+                    modelSha256 = asset.sha256,
+                    delegate = asset.delegate.name,
+                    runtimeVersion = BuildConfig.MEDIAPIPE_AUDIO_VERSION,
+                    deviceRuntime = "${Build.FINGERPRINT}/${Build.SUPPORTED_ABIS.firstOrNull()}",
+                    defaultVoice = asset.voice,
+                    speakingRate = SPEAKING_RATE,
+                    targetBucket = TARGET_BUCKET,
+                )
                 runtime = replacement
                 mutableAvailableVoices.value = voices
                 mutableSelectedVoice.value = selectedVoice
@@ -580,33 +607,28 @@ class KokoroTtsEngine(
         }
     }
 
-    private data class CueChunk(val samples: FloatArray, val sampleRateHz: Int)
-    private data class PreparedCue(val voice: KokoroVoiceId, val input: String, val chunks: List<CueChunk>)
-    // Accessed only under runtimeMutex. Exactly one fixed phrase, never user or reply audio.
-    private var preparedCue: PreparedCue? = null
-    fun prepareToolCue(prefix: String) {
-        val phrase = listOf(prefix.trim().take(39), com.kompi.app.stream.ActivityCueText.Tools)
-            .filter { it.isNotEmpty() }.joinToString(" ")
-        val input = SynthesisText.parse(phrase, MAX_TEXT_CHARS)?.input ?: return
+    internal fun prepareToolCue(message: String) {
+        val phrase = SynthesisText.parse(message, MAX_TEXT_CHARS) ?: return
         scope.launch(inferenceDispatcher) {
             runtimeMutex.withLock {
                 val engine = runtime ?: return@withLock
                 val voice = mutableSelectedVoice.value?.id ?: return@withLock
-                if (!mutableEnabled.value || preparedCue?.let { it.voice == voice && it.input == input } == true) return@withLock
+                if (!mutableEnabled.value) return@withLock
+                val key = cueSynthesisIdentity?.key(phrase, voice) ?: return@withLock
                 try {
-                    val chunks = mutableListOf<CueChunk>()
-                    var samples = 0L
-                    engine.synthesizeStream(input, SynthesisOptions(voiceId = voice.value)).collect {
-                        samples += it.samples.size
-                        check(samples <= 480_000)
-                        if (it.samples.isNotEmpty()) chunks += CueChunk(it.samples.copyOf(), it.sampleRateHz)
-                    }
-                    if (chunks.isNotEmpty()) preparedCue = PreparedCue(voice, input, chunks)
+                    cueAudio.stream(key) { synthesize(engine, phrase, voice) }.collect {}
                 } catch (cancelled: CancellationException) { throw cancelled }
-                  catch (_: Exception) { /* Real speech still has its normal synthesis path. */ }
+                  catch (_: Exception) { /* A failed prewarm never prevents on-demand speech. */ }
             }
         }
     }
+
+    private fun synthesize(engine: MediaPipeTts, phrase: SynthesisText, voice: KokoroVoiceId) =
+        kotlinx.coroutines.flow.flow {
+            engine.synthesizeStream(phrase.input, SynthesisOptions(voiceId = voice.value)).collect {
+                emit(ToolCuePcm(it.samples, it.sampleRateHz))
+            }
+        }
 
     private suspend fun synthesizeAndPlay(first: Speech, batch: MutableList<Speech>) {
         if (isSpeechCancelled(first)) throw CancellationException("Speech stopped")
@@ -664,15 +686,10 @@ class KokoroTtsEngine(
                         if (speech.phrase.input != speech.text) {
                             Log.i(TAG, "Kokoro text formatting: request=${speech.requestId} seq=${speech.sequence} sourceCharacters=${speech.text.length} inputCharacters=${speech.phrase.input.length}")
                         }
-                        val cached = preparedCue?.takeIf { speech.requestId.startsWith("activity-") && it.input == speech.phrase.input && it.voice == speech.voiceId }
-                        if (cached != null) com.kompi.app.diagnostics.SpeechAudit.record(speech.requestId, speech.sequence, "prepared_cue_used")
-                        val audio = kotlinx.coroutines.flow.flow {
-                            if (cached != null) for (chunk in cached.chunks) emit(chunk)
-                            else engine.synthesizeStream(speech.phrase.input, SynthesisOptions(voiceId = speech.voiceId.value)).collect {
-                                emit(CueChunk(it.samples, it.sampleRateHz))
-                            }
-                        }
-                        audio.collect { chunk ->
+                        val key = if (speech.isLiveToolCue) cueSynthesisIdentity?.key(speech.phrase, speech.voiceId) else null
+                        cueAudio.stream(key, onHit = { hit ->
+                            com.kompi.app.diagnostics.SpeechAudit.record(speech.requestId, speech.sequence, "prepared_cue_used", "tier=${hit.name}")
+                        }) { synthesize(engine, speech.phrase, speech.voiceId) }.collect { chunk ->
                             if (isSpeechCancelled(speech)) throw CancellationException("Speech stopped")
                             if (chunk.samples.isEmpty()) return@collect
                             if (firstPcm) {
@@ -1014,6 +1031,7 @@ class KokoroTtsEngine(
         activeDownload?.cancel(CancellationException("Kokoro engine closed"))
         queue.close()
         queueSpace.close()
+        pendingCueWrites.close()
         // Do not synchronously close LiteRT while collect()/AudioTrack writes may still be native.
         // The consumer drains its cancellation/finally path first; lifecycleMutex also waits out a
         // model transfer/initialization before the runtime is released.
@@ -1024,11 +1042,14 @@ class KokoroTtsEngine(
                     runtimeMutex.withLock {
                         val closingRuntime = runtime
                         runtime = null
+                        cueAudio.clearRam()
+                        cueSynthesisIdentity = null
                         runCatching { withContext(inferenceDispatcher) { closingRuntime?.close() } }
                             .onFailure { Log.w(TAG, "Could not release Kokoro runtime during close", it) }
                     }
                 }
             } finally {
+                pendingCueWrites.cancel()
                 scope.cancel()
                 inferenceDispatcher.close()
                 playbackDispatcher.close()
@@ -1054,6 +1075,7 @@ class KokoroTtsEngine(
         // Graph tokens, not characters. A larger batch of 64 led to more producer work,
         // no startup gain. Keep one resident runtime, cached graphs and FIFO speech.
         private const val TARGET_BUCKET = 128
+        private const val SPEAKING_RATE = 1.0f
         private const val TAG = "KompiKokoro"
     }
 }

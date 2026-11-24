@@ -128,14 +128,16 @@ test("native CLI failure output is discarded and never echoes notification conte
 
 test("worker-owner cancellation terminates only the owned native CLI and returns unknown after spawn", async () => {
   const { directory, binary } = await fixture((dir) => `
-const { writeFile } = await import("node:fs/promises");
-await writeFile(${JSON.stringify(join(dir, "pid"))}, String(process.pid));
+const { rename, writeFile } = await import("node:fs/promises");
 process.on("SIGTERM", async () => { await writeFile(${JSON.stringify(join(dir, "exited"))}, "stopped"); process.exit(0); });
+// Publish readiness only once the signal handler and complete PID are available.
+await writeFile(${JSON.stringify(join(dir, "pid.tmp"))}, String(process.pid));
+await rename(${JSON.stringify(join(dir, "pid.tmp"))}, ${JSON.stringify(join(dir, "pid"))});
 await new Promise(() => {});
 `);
   const owner = new AbortController();
   const pending = sendNativeNotification({ endpoint, binary, requestId: "stable-id", title: "title", body: "body" }, owner.signal);
-  await waitFor(() => existsSync(join(directory, "pid")), "native CLI start");
+  await waitFor(() => existsSync(join(directory, "pid")), "native CLI readiness");
   const pid = Number(await readFile(join(directory, "pid"), "utf8"));
   owner.abort();
   expect(await pending).toEqual({ success: true, status: "unknown" });

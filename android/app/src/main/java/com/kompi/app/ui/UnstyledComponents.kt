@@ -41,6 +41,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.rememberTextFieldState
@@ -483,6 +484,8 @@ fun KompiOutlinedTextField(
     maxLines: Int = 5,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     isError: Boolean = false,
+    accessibilityLabel: String = "Text input",
+    inputTransformation: InputTransformation? = null,
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         label?.let { it() }
@@ -491,7 +494,8 @@ fun KompiOutlinedTextField(
                 state = state,
                 modifier = Modifier.fillMaxWidth().heightIn(min = if (singleLine) 28.dp else (minLines * 20).dp),
                 enabled = true,
-                accessibilityLabel = "Text input",
+                accessibilityLabel = accessibilityLabel,
+                inputTransformation = inputTransformation,
                 cursorBrush = SolidColor(KompiUi.colors.primary),
                 textStyle = KompiUi.typography.bodyMedium.copy(color = KompiUi.colors.onSurface),
                 lineLimits = if (singleLine) TextFieldLineLimits.SingleLine else TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = maxLines),
