@@ -221,7 +221,9 @@ jobs:
         run: |
           sudo chmod a+rw /dev/kvm
           tools="$ANDROID_HOME/cmdline-tools/latest/bin"
-          "$tools/sdkmanager" emulator 'system-images;android-35;google_apis;x86_64'
+          "$tools/sdkmanager" platform-tools emulator 'system-images;android-35;google_apis;x86_64'
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          adb version
           echo no | "$tools/avdmanager" create avd -n reply-ci -k 'system-images;android-35;google_apis;x86_64'
           "$ANDROID_HOME/emulator/emulator" -avd reply-ci -port 5554 -no-window -no-audio -no-snapshot -gpu swiftshader_indirect >"$RUNNER_TEMP/emulator.log" 2>&1 &
           trap 'adb -s emulator-5554 emu kill || true' EXIT
