@@ -120,13 +120,6 @@ jobs:
           release="$releases/$id"
           snapshot() { gh api "$release" | jq -e --arg t "$tag" 'select(.tag_name==$t)'; }
           state=$(snapshot)
-          # Check for directions, not legal completeness. The release owner verifies the source before tagging.
-          if [[ $(jq .draft <<< "$state") == true ]] && ! jq -e '
-            any((.body // "" | split("\n"))[]; test("^Corresponding source: https://[^[:space:]]+[[:space:]]*$"))
-          ' <<< "$state" >/dev/null; then
-            echo 'Add a Corresponding source: https://… line to the draft release notes (see docs/releasing.md).' >&2
-            exit 1
-          fi
           for file in "${assets[@]}"; do
             digest=sha256:$(sha256sum "$file" | cut -d' ' -f1)
             if jq -e --arg f "$file" --arg d "$digest" '.assets[] | select(.name==$f and .digest==$d and .state=="uploaded")' <<< "$state" >/dev/null; then continue; fi

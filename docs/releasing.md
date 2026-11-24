@@ -24,7 +24,7 @@ See the [setup guide](../README.md) for installer commands and the archive fallb
 
 ## Corresponding source
 
-Keep the license and third-party notices in the daemon bundles and APKs. Notices are not a substitute for source availability. Before pushing a release tag, put clear directions in the draft release notes to the exact corresponding source, including build scripts and any required dependency sources. GitHub's automatically generated source links cover the tagged Kompi tree, not every dependency. Link to the public, version-specific source directions on a line of its own: `Corresponding source: https://…`. The publish job requires that line in the draft; the release maintainer must verify that the link and its directions work without credentials or a fee, and keep the required source accessible for as long as the binaries are offered. If an upstream source goes away, provide it at another durable location and update the directions. Do not publish a binary with unresolved source availability.
+Put a **Source** section next to the downloads in the release notes. Link to the matching tagged checkout (including the build scripts) and to this section at that tag for the pinned Rust dependencies. GitHub's automatically generated source links contain the Kompi tree but not the separately fetched Rust dependencies. AGPL §6(d) allows the required corresponding source to be hosted elsewhere with clear directions next to the downloads; the distributor remains responsible for keeping it accessible. Preserve the license and third-party notices in the daemon bundles and APKs separately.
 
 From the matching tagged checkout, fetch the pinned Rust sources for the released targets:
 
@@ -33,7 +33,7 @@ cargo fetch --locked --target x86_64-unknown-linux-gnu --target x86_64-pc-window
 (cd third-party/iroh-ffi && cargo fetch --locked --target aarch64-linux-android --target x86_64-linux-android)
 ```
 
-The root `Cargo.lock` pins the host's patched `iroh-tickets` commit. Android's separate lockfile pins a crates.io release with the same crate version, not the fork. The lockfiles record registry checksums and Git commit IDs; for direct links to published crate source, use `https://static.crates.io/crates/<name>/<name>-<version>.crate`. Check version-specific links for dependencies with source terms, including MPL-covered Rust crates. See [Android dependencies and redistribution](../android/dependencies.md) for the separately resolved Android native and Gradle inputs. For redistribution, retain the notices and the required source access for the binaries you offer.
+The root `Cargo.lock` pins the host's patched `iroh-tickets` commit. Android's separate lockfile pins a crates.io release with the same crate version, not the fork. The lockfiles record registry checksums and Git commit IDs; for direct links to published crate source, use `https://static.crates.io/crates/<name>/<name>-<version>.crate`. The pinned Cargo sources include the MPL-covered Rust crates (for example, `attohttpc` on both platforms, `option-ext` on the daemon, and `uniffi_core` on Android). If a required upstream source goes away while the binaries are still offered, keep the exact source available at another public location and update the release directions. See [Android dependencies and redistribution](../android/dependencies.md) for the APK inputs that are not fetched by Cargo.
 
 ## Build without publishing
 
