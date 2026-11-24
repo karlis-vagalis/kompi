@@ -64,7 +64,7 @@ impl Phone {
             .send(
                 "hello",
                 Message::Hello {
-                    capabilities: vec![PHONE_CONVERSATIONS_CAPABILITY.into()],
+                    capabilities: vec![PHONE_CONVERSATIONS_CAPABILITY.into(), CHAT_STREAMS_CAPABILITY.into()],
                     endpoint: Some(endpoint.id().to_string()),
                     session: None,
                     idle_timeout_seconds: Some(IdleTimeoutSeconds::try_from(1800)?),
@@ -465,6 +465,43 @@ async fn r1_r3_reconnect_and_completed_retry_execute_original_request_only_once(
         h.stop().await
     })
     .await?
+}
+
+#[tokio::test]
+async fn reopen_recovers_reply_on_primary_with_and_without_competing_scoped_stream() -> Result<()> {
+    let mut h = Harness::new().await?;
+    let prompt = prompt("Synthetic question");
+    let Message::ConversationPrompt { conversation_id, .. } = prompt else { unreachable!() };
+    h.phone.send("one", prompt).await?;
+    h.phone.accepted("one").await?;
+    let mut worker = h.worker().await?;
+    worker.started("one").await?;
+    h.reconnect().await?;
+    worker.command("release", "one").await?;
+    h.phone.wait(|e| matches!(&e.message, Message::SyncEvents {events, ..} if events.iter().any(|event|
+        matches!(event.event, DurableEvent::ResponseCompleted {outcome:RequestOutcome::Completed,..})))).await?;
+
+    let mut chat = None;
+    for request in ["primary-alone", "primary-with-scoped", "scoped"] {
+        if request == "primary-with-scoped" {
+            let (send, recv) = h.phone.connection.open_bi().await?;
+            let mut route = Phone { connection:h.phone.connection.clone(), send, recv, inbox: vec![] };
+            route.send("open", Message::ConversationStreamOpen { conversation_id }).await?;
+            route.accepted("open").await?;
+            chat = Some(route);
+        }
+        let phone = if request == "scoped" { chat.as_mut().unwrap() } else { &mut h.phone };
+        phone.send(request, Message::PiConversationSnapshotGet { conversation_id }).await?;
+        let response = phone.wait(|e| matches!(&e.message, Message::PiFrame {frame} if frame.request_id.as_ref().is_some_and(|id| id.as_str() == request))).await?;
+        let Message::PiFrame {frame} = response.message else { unreachable!() };
+        assert_eq!(frame.conversation_id, conversation_id);
+        assert!(frame.last);
+        let transcript: Value = serde_json::from_str(&frame.json)?;
+        assert_eq!(transcript["entries"][0]["message"]["content"][0]["text"], "Fixture complete.");
+    }
+    worker.barrier().await?;
+    assert_eq!(worker.started, ["one"]);
+    h.stop().await
 }
 
 #[tokio::test]

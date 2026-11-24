@@ -8,6 +8,7 @@ import { createInterface } from "node:readline";
 let control;
 const active = new Map();
 let conversation;
+const entries = [];
 const emit = (id, type, payload) => process.stdout.write(JSON.stringify({ v: 4, id, message: { type, payload } }) + "\n");
 const report = (event) => control.write(JSON.stringify(event) + "\n");
 const stats = { assistantMessages: 1, textChunks: 0, totalMs: 1 };
@@ -25,6 +26,7 @@ function connectControl() {
   if (command.action === "fail") {
     emit(request.id, "error", { requestId: request.payload.requestId, conversationId: conversation, code: "prompt-failed", message: "Deterministic test failure" });
   } else {
+    entries.push({ id: "reply-" + request.payload.requestId, parentId: null, type: "message", message: {role:"assistant", content:[{type:"text", text:"Fixture complete."}]} });
     emit(request.id, "final", { requestId: request.payload.requestId, conversationId: conversation, stats });
   }
   });
@@ -65,6 +67,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       emit(id, "disposed", { conversationId: payload.conversationId });
       break;
     case "snapshot":
+      emit(id, "pi-frame", {frame:{conversationId:conversation, sessionId:"fixture-session", epoch:"fixture-epoch",
+        sequence:entries.length, kind:"snapshot", part:0, last:true, requestId:payload.requestId,
+        json:JSON.stringify({entries, leafId:entries.at(-1)?.id ?? null})}});
       emit(id, "snapshot-done", { conversationId: payload.conversationId });
       break;
     default:

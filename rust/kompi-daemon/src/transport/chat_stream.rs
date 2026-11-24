@@ -40,7 +40,7 @@ impl Daemon {
             .await?;
         };
         send.set_priority(INTERACTIVE_STREAM_PRIORITY)?;
-        let (_publisher, mut publications) = self.worker.pi_frames.conversation(conversation);
+        let (_publisher, mut publications) = self.worker.pi_frames.conversation(endpoint, conversation);
         let sender = ReadySender::new(send);
         sender
             .send(&Envelope::new(
@@ -305,7 +305,6 @@ mod recovery_tests {
         let buses = PiPublishers::new();
         let mut primary = buses.control.subscribe();
         let conversation = ConversationId::from(uuid::Uuid::new_v4());
-        let (_lease, mut scoped) = buses.conversation(conversation);
         let token = RequestId::parse("internal".to_owned()).unwrap();
         let request = RequestId::parse("client".to_owned()).unwrap();
         let mut publication = PiPublication {
@@ -315,10 +314,17 @@ mod recovery_tests {
                 part: 0, last: true, json: "{}".into(), request_id: Some(token.clone()) },
         };
         buses.primary.lock().unwrap().insert((conversation, token), (7, request.clone()));
-        buses.publish(publication.clone()).await;
-        let reply = primary.try_recv().unwrap();
-        assert_eq!(reply.primary_generation, Some(7));
-        assert_eq!(reply.frame.request_id, Some(request));
+        // A primary request works before a chat attaches and while it is attached.
+        let assert_primary = |reply: PiPublication| {
+            assert_eq!(reply.primary_generation, Some(7));
+            assert_eq!(reply.frame.request_id.as_ref(), Some(&request));
+        };
+        buses.publish("peer", publication.clone()).await;
+        assert_primary(primary.try_recv().unwrap());
+        let (_lease, mut scoped) = buses.conversation("peer", conversation);
+        let (_other, mut other) = buses.conversation("another-peer", conversation);
+        buses.publish("peer", publication.clone()).await;
+        assert_primary(primary.try_recv().unwrap());
         assert!(scoped.try_recv().is_err());
 
         publication.frame.request_id = Some(RequestId::parse("scoped".to_owned()).unwrap());
@@ -326,7 +332,7 @@ mod recovery_tests {
             for part in 0..300 {
                 publication.frame.part = part;
                 publication.frame.last = part == 299;
-                buses.publish(publication.clone()).await;
+                buses.publish("peer", publication.clone()).await;
             }
         });
         tokio::task::yield_now().await;
@@ -334,6 +340,7 @@ mod recovery_tests {
             assert_eq!(scoped.recv().await.unwrap().frame.part, part);
         }
         producer.await.unwrap();
+        assert!(other.try_recv().is_err());
         assert!(primary.try_recv().is_err());
     }
 }

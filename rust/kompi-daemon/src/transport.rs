@@ -3349,6 +3349,7 @@ impl WorkerHost {
         ));
         let pending_ui = Arc::new(tokio::sync::Mutex::new(HashMap::<UiInteractionId, PendingPiUiRequest>::new()));
         let android_tools_reader = android_tools;
+        let publication_peer = notification_endpoint.unwrap_or_default().to_owned();
         let artifact_scope = notification_endpoint.map(|peer| artifacts.scope(peer, conversation_id));
         let artifact_writer = Arc::downgrade(&writer);
         let ui_reader = pending_ui.clone();
@@ -3393,7 +3394,7 @@ impl WorkerHost {
                                     mark_worker_failed(&healthy_reader, &phase_reader, &failure_reader, WorkerFailureCategory::InvalidWorkerEventFrame);
                                     break;
                                 }
-                                pi_frames.publish(PiPublication { frame: frame.clone(), origin, primary_generation: None }).await;
+                                pi_frames.publish(&publication_peer, PiPublication { frame: frame.clone(), origin, primary_generation: None }).await;
                                 continue;
                             }
                             WorkerEvent::UiRequest { conversation_id: owner_id, interaction_id, dialog } => {
@@ -3848,26 +3849,26 @@ type PiSender = tokio::sync::broadcast::Sender<PiPublication>;
 #[derive(Clone)]
 struct PiPublishers {
     control: PiSender,
-    scoped: Arc<Mutex<HashMap<kompi_protocol::ConversationId, mpsc::WeakSender<PiPublication>>>>,
+    scoped: Arc<Mutex<HashMap<(String, kompi_protocol::ConversationId), mpsc::WeakSender<PiPublication>>>>,
     primary: Arc<Mutex<HashMap<(kompi_protocol::ConversationId, RequestId), (u64, RequestId)>>>,
 }
 impl PiPublishers {
     fn new() -> Self {
         Self { control: tokio::sync::broadcast::channel(8192).0, scoped: Default::default(), primary: Default::default() }
     }
-    fn conversation(&self, id: kompi_protocol::ConversationId) -> (mpsc::Sender<PiPublication>, mpsc::Receiver<PiPublication>) {
+    fn conversation(&self, peer: &str, id: kompi_protocol::ConversationId) -> (mpsc::Sender<PiPublication>, mpsc::Receiver<PiPublication>) {
         let mut scoped = self.scoped.lock().expect("Pi publishers poisoned");
         scoped.retain(|_, sender| sender.strong_count() != 0);
         let (sender, receiver) = mpsc::channel(128);
-        scoped.insert(id, sender.downgrade());
+        scoped.insert((peer.to_owned(), id), sender.downgrade());
         (sender, receiver)
     }
-    async fn publish(&self, mut publication: PiPublication) {
+    async fn publish(&self, peer: &str, mut publication: PiPublication) {
         let sender = self.scoped.lock().expect("Pi publishers poisoned")
-            .get(&publication.frame.conversation_id).and_then(mpsc::WeakSender::upgrade);
+            .get(&(peer.to_owned(), publication.frame.conversation_id)).and_then(mpsc::WeakSender::upgrade);
         if matches!(publication.frame.kind, kompi_protocol::PiFrameKind::Snapshot) && publication.frame.request_id.is_some() {
-            // A route-owned refresh may finish after that route detached. It never
-            // crosses to primary or establishes a replacement route's barrier.
+            // Internally generated tokens distinguish requests across streams and
+            // reconnects, even if two clients choose the same envelope ID.
             let route = self.primary.lock().expect("Pi routes poisoned")
                 .get(&(publication.frame.conversation_id, publication.frame.request_id.clone().expect("checked token"))).cloned();
             if let Some((generation, request)) = route {
