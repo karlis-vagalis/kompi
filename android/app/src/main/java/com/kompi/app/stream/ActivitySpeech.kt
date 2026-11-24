@@ -5,7 +5,7 @@ import com.kompi.app.diagnostics.SpeechAudit
 
 /** Bounded activity audio: real headings outrank unstarted generic filler; replies fence new filler. */
 class ActivitySpeech(
-    private val speak: (String, String) -> Boolean,
+    private val speak: (speechId: String, phrase: String, isLiveToolCue: Boolean) -> Boolean,
     private val stop: (String) -> Unit,
     private val newId: () -> String = { "activity-${java.util.UUID.randomUUID()}" },
 ) {
@@ -17,7 +17,7 @@ class ActivitySpeech(
     private val requests = LinkedHashMap<String, String?>()
     private val retired = linkedSetOf<String>()
     private val titleCounts = mutableMapOf<String, Int>()
-    private data class Next(val request: String, val label: String, val prefix: String)
+    private data class Next(val request: String, val label: String, val text: ActivitySpeechText)
     private var next: Next? = null
     private val replyTextSeen = linkedSetOf<String>()
 
@@ -33,7 +33,7 @@ class ActivitySpeech(
         }
     }
 
-    fun offer(requestId: String, activity: String, prefix: String, gate: Gate, allowTools: Boolean = false) {
+    internal fun offer(requestId: String, activity: String, text: ActivitySpeechText, gate: Gate, allowTools: Boolean = false) {
         if (activity == "Thinking") {
             // A start event proves activity, not the absence of a heading. Display it immediately,
             // but classify speech from actual streamed content rather than a speculative timer.
@@ -47,7 +47,7 @@ class ActivitySpeech(
         val isTools = allowTools && activity == "Using tools"
         val line = activity.startsWith("Thinking line: ")
         if (line && !allowTools) {
-            offer(requestId, "Thinking: thinking", prefix, gate)
+            offer(requestId, "Thinking: thinking", text, gate)
             return
         }
         val title = if (line) activity.removePrefix("Thinking line: ") else if (isTools) "using tools" else activity.takeIf { it.startsWith("Thinking: ") }
@@ -61,11 +61,13 @@ class ActivitySpeech(
         val ordinal = if (!isTools && requestId in requests)
             titleCounts.getValue(requestId).also { titleCounts[requestId] = it + 1 } else null
         val cue = when (kind) {
-            Kind.Tools -> SpeechAudit.Cue.Tools
+            Kind.Tools -> SpeechAudit.Cue.Tools(SpeechAudit.fingerprint(text.toolPhrase))
             Kind.GenericThinking -> SpeechAudit.Cue.Thinking
             Kind.Line, Kind.Title -> ordinal?.let { SpeechAudit.Cue.Title(it, SpeechAudit.fingerprint(title)) }
         }
-        val source = cue?.let { SpeechAudit.Source.Activity(it, SpeechAudit.fingerprint(prefix.trim().take(39))) }
+        val source = cue?.let {
+            SpeechAudit.Source.Activity(it, if (isTools) null else SpeechAudit.fingerprint(text.thinkingPhrase("")))
+        }
         fun report(outcome: String) {
             SpeechAudit.record(requestId, stage = "activity_offer", detail = "kind=${kind.name} outcome=$outcome", source = source)
         }
@@ -77,7 +79,7 @@ class ActivitySpeech(
         if (!isTools && requests[requestId] == title) { report("duplicate"); return }
         // One tool cue may follow an admitted thinking readout, never a backlog of stale headings.
         if (accepted.isNotEmpty() && (!isTools || accepted.size >= 2 || accepted.values.any { it.kind == Kind.Tools })) {
-            if (!isTools && allowTools) next = Next(requestId, activity, prefix)
+            if (!isTools && allowTools) next = Next(requestId, activity, text)
             else if (isTools) next = null
             report("activity_busy")
             return
@@ -89,9 +91,13 @@ class ActivitySpeech(
             Kind.Line, Kind.Title -> title
         }
         next = null
-        val phrase = if (line) title else listOf(prefix.trim().take(39), spokenSuffix).filter { it.isNotEmpty() }.joinToString(" ")
+        val phrase = when (kind) {
+            Kind.Line -> title
+            Kind.Tools -> text.toolPhrase
+            Kind.GenericThinking, Kind.Title -> text.thinkingPhrase(spokenSuffix)
+        }
         SpeechAudit.bind(speechId, 0, requestId, source)
-        if (phrase.any { it.isLetterOrDigit() } && speak(speechId, phrase)) {
+        if (phrase.any { it.isLetterOrDigit() } && speak(speechId, phrase, isTools)) {
             accepted[speechId] = Accepted(PlaybackOwner(requestId, spokenSuffix), kind)
             if (!isTools) requests[requestId] = title
             report("accepted")
@@ -141,7 +147,7 @@ class ActivitySpeech(
         val pending = next ?: return
         if (accepted.isNotEmpty() || pending.request != finished.owner.requestId) return
         next = null
-        offer(pending.request, pending.label, pending.prefix, gate(pending.request), allowTools = true)
+        offer(pending.request, pending.label, pending.text, gate(pending.request), allowTools = true)
     }
 
     /** Unstarted generic filler yields; admitted real headings/tools and already-playing cues finish. */

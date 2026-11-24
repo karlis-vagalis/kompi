@@ -98,9 +98,9 @@ impl Offer {
 }
 
 #[derive(Clone, Debug)]
-pub struct Ready { pub upload_id: UploadId, pub offset: u64, pub chunk_size: u32 }
+pub struct Ready { pub offset: u64, pub chunk_size: u32 }
 #[derive(Clone, Debug)]
-pub struct Progress { pub upload_id: UploadId, pub received_bytes: u64 }
+pub struct Progress { pub received_bytes: u64 }
 #[derive(Clone, Debug)]
 pub struct Accepted { pub offer: Offer }
 #[derive(Clone, Debug)]
@@ -195,7 +195,7 @@ impl AttachmentStore {
                 if completion.expires_at_ms <= jiff::Timestamp::now().as_millisecond() {
                     bail!("completed attachment is expired");
                 }
-                return Ok(Ready { upload_id: offer.upload_id, offset: offer.length, chunk_size: ATTACHMENT_CHUNK_MAX_BYTES as u32 });
+                return Ok(Ready { offset: offer.length, chunk_size: ATTACHMENT_CHUNK_MAX_BYTES as u32 });
             }
             let meta = dir.join("offer.json");
             let prior = if path_exists(&meta)? { Some(read_offer(&meta)?) } else { None };
@@ -207,7 +207,7 @@ impl AttachmentStore {
                 if path_exists(&partial)? { ensure_regular_file(&partial)?; fs::remove_file(&partial)?; }
                 let file = create_private_file(&partial)?;
                 file.sync_all()?;
-                return Ok(Ready { upload_id: offer.upload_id, offset: 0, chunk_size: ATTACHMENT_CHUNK_MAX_BYTES as u32 });
+                return Ok(Ready { offset: 0, chunk_size: ATTACHMENT_CHUNK_MAX_BYTES as u32 });
             }
         }
         ensure_peer_quota(&peer_dir, offer.length, None)?;
@@ -216,7 +216,7 @@ impl AttachmentStore {
         let file = create_private_file(&partial)?;
         file.sync_all()?;
         write_offer(&dir.join("offer.json"), &offer)?;
-        Ok(Ready { upload_id: offer.upload_id, offset: 0, chunk_size: ATTACHMENT_CHUNK_MAX_BYTES as u32 })
+        Ok(Ready { offset: 0, chunk_size: ATTACHMENT_CHUNK_MAX_BYTES as u32 })
     }
 
     /// Writes one bounded chunk and applies backpressure by completing the disk write before
@@ -238,7 +238,7 @@ impl AttachmentStore {
         file.seek(std::io::SeekFrom::Start(offset)).await?;
         file.write_all(data).await?;
         file.sync_data().await?;
-        Ok(Progress { upload_id: id, received_bytes: end })
+        Ok(Progress { received_bytes: end })
     }
 
     /// Hashes and checks the completed stream before publishing it atomically without ever
@@ -290,25 +290,6 @@ impl AttachmentStore {
         sync_directory(&dir)?;
         self.record_completion(peer, &offer, &blob, expires_at_ms).await?;
         Ok(Accepted { offer })
-    }
-
-    /// Returns only a completed attachment inside this authenticated peer's private root.
-    pub async fn lookup_completed(&self, peer: &str, id: UploadId) -> Result<AttachmentRef> {
-        let _guard = self.lock_peer(peer).await?;
-        let dir = self.upload_dir(peer, id);
-        ensure_existing_private_dir(&dir)?;
-        let disk_offer = read_completion(&dir.join("complete.json"))?.offer;
-        let id = disk_offer.upload_id.value().to_string();
-        let Some((raw_path, file_name, media_type, length, sha256)) = self.sqlite
-            .upload_record(peer, &id, jiff::Timestamp::now().as_millisecond()).await? else {
-            bail!("attachment is expired or unavailable");
-        };
-        let offer = Offer::new(disk_offer.upload_id, file_name, media_type, u64::try_from(length)?, &sha256)?;
-        if offer != disk_offer { bail!("SQLite attachment metadata does not match the published upload"); }
-        let path = PathBuf::from(raw_path);
-        if path != dir.join("payload.blob") { bail!("SQLite attachment path does not match its upload identity"); }
-        ensure_regular_file(&path)?;
-        Ok(AttachmentRef { offer, path })
     }
 
     /// Resolve an upload only through the durable reference acquired atomically with its
