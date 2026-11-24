@@ -183,6 +183,17 @@ jobs:
           "$RUNNER_TEMP/native-tools/bin/pip" install 'uv==0.11.26'
           echo "$RUNNER_TEMP/native-tools/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/cmake/4.1.2/bin" >> "$GITHUB_PATH"
+      - name: Build APKs for the emulator regression
+        working-directory: android
+        run: ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: emulator-regression-apks
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          if-no-files-found: error
+          retention-days: 1
       - run: just apk-release
       - name: Inspect both standalone APKs
         run: |
@@ -197,3 +208,28 @@ jobs:
             android/app/build/outputs/apk/release/app-arm64-v8a-release-unsigned.apk
             android/app/build/outputs/apk/release/app-x86_64-release-unsigned.apk
           if-no-files-found: error
+  reply-recovery-emulator:
+    needs: android
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: emulator-regression-apks
+      - name: Run visible reply recovery regression on a fresh emulator
+        shell: bash
+        run: |
+          sudo chmod a+rw /dev/kvm
+          tools="$ANDROID_HOME/cmdline-tools/latest/bin"
+          "$tools/sdkmanager" emulator 'system-images;android-35;google_apis;x86_64'
+          echo no | "$tools/avdmanager" create avd -n reply-ci -k 'system-images;android-35;google_apis;x86_64'
+          "$ANDROID_HOME/emulator/emulator" -avd reply-ci -port 5554 -no-window -no-audio -no-snapshot -gpu swiftshader_indirect >"$RUNNER_TEMP/emulator.log" 2>&1 &
+          trap 'adb -s emulator-5554 emu kill || true' EXIT
+          export ANDROID_SERIAL=emulator-5554
+          # shellcheck disable=SC2016 # boot property must be polled by the bounded child shell
+          timeout 300 bash -c 'adb wait-for-device; until [[ $(adb shell getprop sys.boot_completed | tr -d "\r") == 1 ]]; do sleep 2; done'
+          adb shell input keyevent 82
+          adb install debug/app-debug.apk
+          adb install androidTest/debug/app-debug-androidTest.apk
+          adb shell am instrument -w -e class 'com.kompi.app.ReplyRecoveryScreenTest,com.kompi.app.ChatTransportContinuityTest#completedOfflineNeedsReadableReplyAfterReopen,com.kompi.app.ChatTransportContinuityTest#firstTurnCompletesWithoutLeavingNewChat,com.kompi.app.ChatProjectionBehaviorTest#r3_s1_eventsBufferedBeforeSnapshotApplyOnlyAfterItsBarrier' com.kompi.app.test/androidx.test.runner.AndroidJUnitRunner | tee "$RUNNER_TEMP/result"
+          grep -Eq '^OK \(4 tests\)' "$RUNNER_TEMP/result"
