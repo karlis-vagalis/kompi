@@ -159,15 +159,8 @@ internal class NativeLiveAudioHarness(
         acquisitionCheckpoint().deltaSince(before)
 
     /** Single immutable native-stats publication; no JNI, native/model lock or stale owner. */
-    fun nativeHistorySnapshot(): NativeHistorySnapshot {
-        val owner = openedSessions.lastOrNull() ?: throw AssertionError("Native history unavailable: duplexOwner=0")
-        val current = LiveConversationController::class.java.getDeclaredField("audioSession").apply { isAccessible = true }.get(controller)
-        if (current !== owner) throw AssertionError("Native history unavailable: exactCurrentDuplexOwner=0")
-        return readNativeHistorySnapshot(owner)
-    }
-
-    fun dumpSoftwareEchoDiagnostics() {
-        openedSessions.forEach(::printSoftwareEchoDiagnostics)
+    fun dumpAudioDiagnostics() {
+        openedSessions.forEach(::printSessionRouteFailure)
         printNativeAcquisitionDiagnostics(acquisitionDiagnostics)
     }
 

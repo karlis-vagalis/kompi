@@ -130,12 +130,7 @@ internal class LivePlaybackDrainFailureAcceptanceTest : NativeMicrophoneScenario
                         val track = engineField("activeTrack") as AudioTrack
                         val worker = engineField("activeSynthesis") as Job
                         val reference = checkNotNull(engineField("activeRenderReference"))
-                        // Live owns a reservation-retiring wrapper; follow its typed native lease
-                        // rather than confusing that ownership wrapper with playback accounting.
-                        val nativeReference = checkNotNull(reference.javaClass.declaredFields.single {
-                            com.kompi.app.audio.DuplexEchoProcessor.RenderLease::class.java.isAssignableFrom(it.type)
-                        }.apply { isAccessible = true }.get(reference))
-                        val render = nativeReference.javaClass.getDeclaredField("render").apply { isAccessible = true }.get(nativeReference)
+                        val render = reference
                         val accepted = render.javaClass.getDeclaredField("accepted").apply { isAccessible = true }.getLong(render)
                         val sampleRate = track.sampleRate
                         check(track.playState == AudioTrack.PLAYSTATE_PLAYING)

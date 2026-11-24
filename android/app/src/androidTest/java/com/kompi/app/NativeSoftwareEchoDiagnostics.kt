@@ -44,36 +44,6 @@ internal fun printSessionRouteFailure(owner: LiveAudioSession) {
 }
 
 /** Numeric AEC evidence only: no PCM, text, hardware read, JNI call, model lock or timing sleep. */
-internal fun printSoftwareEchoDiagnostics(owner: LiveAudioSession? = null) {
-    fun emit(line: String) = emitNativeAudioDiagnostic(line)
-    try {
-        val type = LiveAudioSession::class.java
-        val current = owner ?: run {
-            val registry = type.getDeclaredField("registryLock").apply { isAccessible = true }.get(null)
-            synchronized(checkNotNull(registry)) { type.getDeclaredField("active").apply { isAccessible = true }.get(null) }
-        } ?: return
-        val session = current as LiveAudioSession
-        printSessionRouteFailure(session) // Also retain failures before APM creation.
-        val dsp = type.getDeclaredField("echoProcessor").apply { isAccessible = true }.get(current) ?: return
-        fun field(name: String) = dsp.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(dsp)
-        // CopyOnWriteArrayList.toArray snapshots its immutable backing array. No APM/model join,
-        // no iterator over a mutating ArrayDeque, and emission occurs outside ALL audio locks.
-        val snapshots = (field("diagnosticFrames") as CopyOnWriteArrayList<*>).toTypedArray()
-        val first = (field("firstFault") as AtomicReference<*>).get()
-        val names = listOf("code", "nativeStatus", "captureFrames", "captureUncertaintyNs", "referenceUncertaintyNs",
-            "hasReference", "captureHardware", "renderHardware", "referenceCount", "consumerFilled")
-        val fault = if (first == null) "code=0" else names.joinToString(" ") { name ->
-            val value = first.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(first) as Number
-            "$name=$value"
-        }
-        val ownerEpoch = session.epoch
-        emit("REAL_AUDIO_AEC firstFault $fault failureCode=${(field("failureCode") as AtomicInteger).get()} nativeStatus=${field("nativeStatus")} ownerEpoch=$ownerEpoch")
-        snapshots.forEach { emit("REAL_AUDIO_AEC sampledFrame $it ownerEpoch=$ownerEpoch") }
-        emit("REAL_AUDIO_AEC lifetime captureFrames=${field("metricsFrames")} inputEnergy=${field("diagnosticTotalInputEnergy")} outputEnergy=${field("diagnosticTotalOutputEnergy")} referenceEnergy=${field("diagnosticTotalReferenceEnergy")} ownerEpoch=$ownerEpoch")
-    } catch (error: Exception) {
-        emit("REAL_AUDIO_AEC diagnosticsUnavailable=${error.javaClass.simpleName}")
-    }
-}
 
 /** Emit outside capture callbacks and all audio/model locks. Diagnostic failure never replaces a
  * test/cleanup failure. Each capture emits at most start + two cumulative + end + unavailable,
@@ -128,32 +98,6 @@ internal data class NativeCaptureEffects internal constructor(
 
 /** Stable native history copied from ONE immutable producer publication; never calls JNI/stats.
  * Session epoch and processor identity are separate from the native capture lease ID. */
-internal data class NativeHistorySnapshot internal constructor(
-    val ownerEpoch: Long, val processorIdentity: Int,
-    val captureFrames: Long, val reverseFrames: Long, val suspendedReverseFrames: Long,
-    val suspendedHistoryFaults: Long, val suspendedHistoryEventMask: Int, val statsPresentMask: Int,
-    val suspendedTransitionLatencyBlocks: Int, val suspendedAdvancedBlocks: Int,
-    val suspendedRecoveryLatencyBlocks: Int, val nativeStatus: Int, val failureCode: Int,
-    val observedNanos: Long,
-)
-
-internal fun readNativeHistorySnapshot(owner: LiveAudioSession): NativeHistorySnapshot {
-    try {
-        fun field(value: Any, name: String) = value.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(value)
-        val processor = field(owner, "echoProcessor")
-            ?: throw AssertionError("Native history unavailable: softwareProcessor=0 ownerEpoch=${owner.epoch}")
-        val snapshot = field(processor, "nativeHistoryDiagnostics")
-            ?: throw AssertionError("Native history unavailable: observedMetadata=0 ownerEpoch=${owner.epoch}")
-        fun number(name: String) = field(snapshot, name) as Number
-        return NativeHistorySnapshot(owner.epoch, System.identityHashCode(processor),
-            number("captureFrames").toLong(), number("reverseFrames").toLong(), number("suspendedReverseFrames").toLong(),
-            number("suspendedHistoryFaults").toLong(), number("suspendedHistoryEventMask").toInt(), number("statsPresentMask").toInt(),
-            number("suspendedTransitionLatencyBlocks").toInt(), number("suspendedAdvancedBlocks").toInt(),
-            number("suspendedRecoveryLatencyBlocks").toInt(), number("nativeStatus").toInt(), number("failureCode").toInt(),
-            number("observedNanos").toLong())
-    } catch (error: AssertionError) { throw error }
-    catch (_: Exception) { throw AssertionError("Native history unavailable: numericMetadataReadable=0 ownerEpoch=${owner.epoch}") }
-}
 
 /** Immutable content-free checkpoint of a VERIFIED current AudioRecord producer. Construction
  * requires a live exact recorder/lease binding; historical ended snapshots are printer-only. */

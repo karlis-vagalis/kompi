@@ -177,7 +177,7 @@ class KokoroTtsEngine(
     @Volatile private var activeSynthesis: Job? = null
     @Volatile private var activeDownload: Job? = null
     @Volatile private var activeTrack: AudioTrack? = null
-    @Volatile private var activeRenderReference: DuplexEchoProcessor.RenderLease? = null
+    @Volatile private var activeRenderReference: LiveAudioSession.RenderLease? = null
     // Only the synthesis job hands this back to the queue owner, which waits for that job to join.
     private var deferredSpeech: Speech? = null
     private val consumerJob: Job
@@ -450,7 +450,6 @@ class KokoroTtsEngine(
     fun stop(requestId: String? = null) {
         val jobToCancel: Job?
         val trackToStop: AudioTrack?
-        val referenceToStop: DuplexEchoProcessor.RenderLease?
         val engineToCancel: MediaPipeTts?
         val playbackToFence: PlaybackAudioLease?
         synchronized(stateLock) {
@@ -498,7 +497,6 @@ class KokoroTtsEngine(
                 jobToCancel = activeSynthesis.takeIf { activeRequestId == requestId }
             }
             trackToStop = activeTrack.takeIf { jobToCancel != null }
-            referenceToStop = activeRenderReference.takeIf { jobToCancel != null }
             playbackToFence = playbackLease.takeIf { jobToCancel != null }
             engineToCancel = runtime
             if (jobToCancel != null) publishPlaybackPhase(KokoroPlaybackPhase.Idle)
@@ -514,7 +512,6 @@ class KokoroTtsEngine(
             (playbackToFence as? PlaybackAudioLease.BorrowedLive)?.fenceHardware()
             trackToStop?.let { track ->
                 runCatching { track.pause() }
-                referenceToStop?.freeze() // Freeze this exact track's head BEFORE flush resets it.
                 runCatching { track.flush() }
             }
             // UNDISTPATCHED registers this child before cancelling its parent. Its initial
@@ -704,7 +701,7 @@ class KokoroTtsEngine(
                             }
                             is PlaybackAudioLease.OwnedStandalone -> { permit.requireActive(); createTrack(sampleRate, permit.attributes) }
                         } } catch (error: Throwable) { renderAdmission?.release(); throw error }
-                        var reference: DuplexEchoProcessor.RenderLease? = null
+                        var reference: LiveAudioSession.RenderLease? = null
                         try {
                             if (permit is PlaybackAudioLease.BorrowedLive) reference = permit.session.renderReference(created, sampleRate, checkNotNull(renderAdmission))
                             pcmWriter = LivePcmBlockWriter(created, sampleRate, reference) {
@@ -800,7 +797,6 @@ class KokoroTtsEngine(
             playbackStarted = true
         }
         val drainStarted = System.nanoTime()
-        activeRenderReference?.finishWrites()
         synchronized(stateLock) {
             if (isSpeechCancelledLocked(first)) throw CancellationException("Speech stopped")
             publishPlaybackPhase(KokoroPlaybackPhase.Draining(lastSpeech.requestId, lastSpeech.sequence, lastSpeech.text))

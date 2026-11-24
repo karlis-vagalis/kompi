@@ -181,16 +181,6 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
         println("REAL_AUDIO_DIRECT_DELIVERY stage=$stage samples=${proof.successfulReadSamples} reads=${proof.successfulReads} rawRms=${proof.normalizedRms} owner=${proof.owner}")
     }
 
-    private fun assertHistoryPreserved(before: NativeHistorySnapshot, now: NativeHistorySnapshot, stage: String) {
-        assertEquals("Microphone controls must retain the duplex owner", before.ownerEpoch, now.ownerEpoch)
-        assertEquals("Mute must preserve the actual native APM, not recreate its filters", before.processorIdentity, now.processorIdentity)
-        assertTrue("History observations must be monotonic", now.captureFrames >= before.captureFrames &&
-            now.reverseFrames >= before.reverseFrames && now.suspendedReverseFrames >= before.suspendedReverseFrames)
-        assertEquals("Suspended history must not insert-overrun, prepare-overrun or reset: stage=$stage mask=${now.suspendedHistoryEventMask}",
-            0, now.suspendedHistoryEventMask and (1 or 2 or 8))
-        assertEquals("The native history observation must not conceal a DSP failure", 0, now.nativeStatus)
-        assertEquals("The native history observation must not conceal a duplex failure", 0, now.failureCode)
-    }
 
     private fun awaitPublishedMicrophoneMute() {
         // Privacy fencing precedes the actor's selected-state publication. Observe both
@@ -272,8 +262,6 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
         val originalSession = liveRecordings().single().clientAudioSessionId
         val originalAcquisition = h.acquisitionCheckpoint()
         assertEquals("RAW acquisition must belong to the actual live recording", originalSession, originalAcquisition.owner.audioSessionId)
-        val initialHistory = h.nativeHistorySnapshot()
-        assertHistoryPreserved(initialHistory, initialHistory, "before_echo")
 
         fun assertOnlyOriginalIntent() {
             assertEquals("Far-end echo must not create a new speech onset", 1, onsets.size)
@@ -293,13 +281,9 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
             assertEquals("Echo must reach the original post-seed acquisition owner", originalAcquisition.owner, beforeEcho.owner)
             awaitEnergeticEchoAcquisition(beforeEcho, first.requestId, "before_microphone_mute_echo")
             assertOnlyOriginalIntent()
-            val beforeMute = h.nativeHistorySnapshot()
-            assertHistoryPreserved(initialHistory, beforeMute, "before_microphone_mute")
 
             clickMuteControl(Target.Microphone, mute = true)
             awaitPublishedMicrophoneMute()
-            val mutedHistory = h.nativeHistorySnapshot()
-            assertHistoryPreserved(beforeMute, mutedHistory, "microphone_closed")
             fun assertMutedWhileOriginalOutputPlays() {
                 assertTrue("Privacy mute must close every actual recording", manager.activeRecordingConfigurations.isEmpty())
                 assertTrue(h.snapshot.microphoneMuted)
@@ -309,10 +293,7 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
                 assertSame("The original actual output track must survive microphone mute", track, activeTrack())
                 assertEquals(KokoroSpeechStatus.Playing, h.tts.requestStatuses.value[first.requestId]?.state)
                 assertOnlyOriginalIntent()
-                val now = h.nativeHistorySnapshot()
-                assertHistoryPreserved(mutedHistory, now, "while_microphone_closed")
-                assertEquals("No synthetic capture may advance APM while the hardware microphone is closed",
-                    mutedHistory.captureFrames, now.captureFrames)
+
             }
 
             val initialHead = checkNotNull(playbackHead(track)) { "Reply ended before muted playback observation" }
@@ -325,9 +306,7 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
             }
             assertTrue(advanced >= requiredFrames)
             assertMutedWhileOriginalOutputPlays()
-            val afterMutedPlayback = h.nativeHistorySnapshot()
-            assertTrue("The muted journey must exercise more than the stock 100-frame render queue",
-                afterMutedPlayback.suspendedReverseFrames - mutedHistory.suspendedReverseFrames > 100L)
+
             checkpoint("L09", "energetic_echo_microphone_closed_output_advanced")
 
             // Explicitly unmute WHILE the SAME answer/AudioTrack still owns output, not after drain.
@@ -354,7 +333,6 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
             assertEquals(1, manager.activeRecordingConfigurations.size)
             awaitEnergeticEchoAcquisition(resumed, first.requestId, "unmuted_during_same_reply_echo")
             assertOnlyOriginalIntent()
-            assertHistoryPreserved(beforeMute, h.nativeHistorySnapshot(), "energetic_echo_after_unmute")
             checkpoint("L09", "fresh_capture_energetic_echo_original_output_retained")
 
             h.drained(first.requestId)
@@ -365,7 +343,6 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
             compose.onNodeWithText(longReply).assertIsDisplayed()
             assertOnlyOriginalIntent()
             assertDurableIntents(1)
-            assertHistoryPreserved(beforeMute, h.nativeHistorySnapshot(), "original_reply_drained_after_unmute")
         } catch (error: Throwable) { failure = error }
         try {
             val evidence = audio.stopEcho()
@@ -381,7 +358,6 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
         audio.inject("silence")
         assertOnlyOriginalIntent()
         assertDurableIntents(1)
-        assertHistoryPreserved(initialHistory, h.nativeHistorySnapshot(), "after_echo_closed")
         assertEquals(2, h.inputs.size)
         assertEquals(1, manager.activeRecordingConfigurations.size)
         assertTrue("The real mute/echo journey must not conceal native failures", h.audioFailures.isEmpty())
@@ -396,41 +372,21 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
         val originalInput = h.inputs.single()
         val originalSession = liveRecordings().single().clientAudioSessionId
         val originalAcquisition = h.acquisitionCheckpoint()
-        val initialHistory = h.nativeHistorySnapshot()
 
-        fun assertEffectState(effect: String, available: Int, created: Int, control: Int, setStatus: Int, enabled: Int) {
-            assertTrue("$effect availability must be observed, not unknown", available == 0 || available == 1)
-            if (available == 1) {
-                assertEquals("Available $effect must have an actual owned control", 1, created)
-                assertEquals("The current recorder must retain $effect control", 1, control)
-                assertEquals("Disabling the actual $effect must succeed", 0, setStatus)
-                assertEquals("The actual owned $effect must be observed disabled", 0, enabled)
-            } else {
-                // Absence is NOT proof that an unknown/vendor effect is disabled. Preserve the
-                // producer's unavailable/unattempted sentinels; never relabel these as OFF.
-                assertEquals("An unavailable $effect must not fabricate a control", 0, created)
-                assertEquals(-1, control)
-                assertEquals(Int.MIN_VALUE, setStatus)
-                assertEquals(-1, enabled)
-            }
-        }
-        fun assertSoftwareCapture(snapshot: NativeAcquisitionSnapshot) {
+        fun assertPlatformCapture(snapshot: NativeAcquisitionSnapshot) {
             assertEquals("The actual recorder must use the owned communication source",
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION, snapshot.owner.audioSource)
             val effects = checkNotNull(snapshot.effects) { "Actual current recorder effect-control metadata is required" }
             assertTrue("Effect observations must belong to this exact recorder/session/request", effects.matches(snapshot.owner))
-            assertEquals(EchoCancellationPolicy.SoftwareOwned.ordinal, effects.policy)
+            assertTrue(effects.policy == EchoCancellationPolicy.Required.ordinal || effects.policy == EchoCancellationPolicy.Optional.ordinal)
             assertEquals("Effect setup must really be ready", 1, effects.phase)
             assertEquals(0, effects.failureEffect)
             assertEquals(0, effects.failureStage)
             assertEquals(0, effects.unsafeMask)
-            assertEffectState("AEC", effects.aecAvailable, effects.aecCreated, effects.aecHasControl, effects.aecSetStatus, effects.aecEnabled)
-            assertEffectState("NS", effects.nsAvailable, effects.nsCreated, effects.nsHasControl, effects.nsSetStatus, effects.nsEnabled)
-            assertEffectState("AGC", effects.agcAvailable, effects.agcCreated, effects.agcHasControl, effects.agcSetStatus, effects.agcEnabled)
+            if (effects.policy == EchoCancellationPolicy.Required.ordinal) assertEquals(1, effects.aecEnabled)
         }
         assertEquals(originalSession, originalAcquisition.owner.audioSessionId)
-        assertSoftwareCapture(originalAcquisition)
-        assertHistoryPreserved(initialHistory, initialHistory, "before_quiescent_mute")
+        assertPlatformCapture(originalAcquisition)
 
         fun assertMutedOwnerRetained() {
             assertTrue("User mute must keep every actual recording closed", manager.activeRecordingConfigurations.isEmpty())
@@ -450,7 +406,6 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
             assertEquals(first.requestId, h.snapshot.replyRequestId)
             assertEquals(longReply, h.snapshot.assistantText)
             assertTrue("No native failure may be hidden while the user is muted", h.audioFailures.isEmpty())
-            assertHistoryPreserved(initialHistory, h.nativeHistorySnapshot(), "muted_owner_retained")
         }
 
         h.reply(longReply)
@@ -458,7 +413,6 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
         clickMuteControl(Target.Microphone, mute = true)
         awaitPublishedMicrophoneMute()
         assertMutedOwnerRetained()
-        val mutedHistory = h.nativeHistorySnapshot()
         audio.startCapture() // Output-only observation; no microphone PCM is injected while muted.
         awaitMorePlayback(first.requestId, originalTrack, ::assertMutedOwnerRetained)
         h.await("The original real answer must drain while actual microphone capture stays closed") {
@@ -473,9 +427,7 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
         }
         compose.onNodeWithText(longReply).assertIsDisplayed()
         assertDurableIntents(1)
-        val quiescentHistory = h.nativeHistorySnapshot()
-        assertEquals("Closing real capture must not manufacture further APM capture frames",
-            mutedHistory.captureFrames, quiescentHistory.captureFrames)
+
         val phaseBoundary = h.phases.size
         val quiescentStartNanos = SystemClock.elapsedRealtimeNanos()
 
@@ -494,10 +446,7 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
             assertEquals(KokoroPlaybackPhase.Idle, h.tts.playbackPhase.value)
             assertFalse("Completed output must not replay or create surprise generated PCM", h.phases.drop(phaseBoundary)
                 .any { it is KokoroPlaybackPhase.Playing })
-            val history = h.nativeHistorySnapshot()
-            assertHistoryPreserved(quiescentHistory, history, "quiescent_window_${index + 1}")
-            assertEquals("Closed-microphone quiescence must not advance synthetic capture",
-                quiescentHistory.captureFrames, history.captureFrames)
+
             recordLiveNumericObservation("L09", "quiescent_output_window_${index + 1}",
                 "elapsedNanos" to SystemClock.elapsedRealtimeNanos() - quiescentStartNanos,
                 "observedMode" to manager.mode, "recordings" to manager.activeRecordingConfigurations.size,
@@ -529,8 +478,7 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
         assertNotEquals(originalAcquisition.owner.recordIdentity, resumed.owner.recordIdentity)
         assertNotEquals(originalAcquisition.owner.requestEpoch, resumed.owner.requestEpoch)
         assertEquals("Quiescence must retain the logical duplex epoch", originalAcquisition.owner.duplexEpoch, resumed.owner.duplexEpoch)
-        assertSoftwareCapture(resumed)
-        assertHistoryPreserved(quiescentHistory, h.nativeHistorySnapshot(), "explicit_unmute_after_quiescence")
+        assertPlatformCapture(resumed)
         assertTrue(h.cancellations.isEmpty())
 
         val next = speakAndPersist("negation", 2)
@@ -544,7 +492,6 @@ internal class LiveMuteAcceptanceTest : NativeMicrophoneScenario() {
         assertEquals(2, onsets.size)
         assertEquals(2, h.inputs.size)
         assertTrue("Mute, quiescence, explicit unmute and the distinct next point must not remotely cancel either completed reply", h.cancellations.isEmpty())
-        assertHistoryPreserved(quiescentHistory, h.nativeHistorySnapshot(), "next_intent_and_reply_drained")
         h.main { h.controller.endLive() }
         microphoneStopped()
         checkpoint("L09", "quiescent_unmute_next_intent_persisted_and_ended")

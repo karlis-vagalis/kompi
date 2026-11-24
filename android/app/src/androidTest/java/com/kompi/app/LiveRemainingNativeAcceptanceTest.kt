@@ -206,11 +206,7 @@ internal class LiveRemainingNativeAcceptanceTest : NativeMicrophoneScenario() {
         // Identity of the initialized synthesis runtime only, NOT an AudioTrack native epoch.
         val initialInitializedOwner = runCatching { pointer(initializedOwnerField) }.onFailure { initialPointerDiagnosticCode = initialPointerDiagnosticCode or 2 }.getOrNull()
         // Retain this real producer's counters across retirement; no callback/hardware mutation.
-        val referenceWrapper = checkNotNull(initialReference)
-        val nativeReference = checkNotNull(referenceWrapper.javaClass.declaredFields.single {
-            DuplexEchoProcessor.RenderLease::class.java.isAssignableFrom(it.type)
-        }.apply { isAccessible = true }.get(referenceWrapper))
-        val render = checkNotNull(nativeReference.javaClass.getDeclaredField("render").apply { isAccessible = true }.get(nativeReference))
+        val render = checkNotNull(initialReference)
         val sourceRate = render.javaClass.getDeclaredField("rate").apply { isAccessible = true }.getInt(render)
         val acceptedSourceFrames = render.javaClass.getDeclaredField("accepted").apply { isAccessible = true }
         data class OwnerMetadata(val beganNanos: Long, val endedNanos: Long, val requestTerminalCode: Int,

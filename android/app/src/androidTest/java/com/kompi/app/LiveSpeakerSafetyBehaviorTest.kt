@@ -6,7 +6,6 @@ import android.media.audiofx.AcousticEchoCanceler
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import com.kompi.app.audio.SpeechRecognitionModel
-import com.kompi.app.audio.LiveSoftwareEchoFactory
 import com.kompi.app.audio.KokoroTtsEngine
 import com.kompi.app.audio.KokoroSpeechStatus
 import com.kompi.app.audio.live.LocalLiveSpeechInput
@@ -28,15 +27,12 @@ import java.util.concurrent.CopyOnWriteArrayList
 class LiveSpeakerSafetyBehaviorTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
     @get:Rule val testName = TestName()
-    private var softwareUnavailable: Closeable? = null
     private val onsets = CopyOnWriteArrayList<Long>()
     private lateinit var h: NativeLiveAudioHarness
     private lateinit var audio: EmulatorAudioBridge
     @Before fun mount() {
-        assertFalse("This negative-environment case requires genuinely unavailable framework AEC", AcousticEchoCanceler.isAvailable())
-        if (testName.methodName == "missingSpeakerAecFailsClosedWithHeadphonesGuidanceAndNoCaptureOrCue") {
-            softwareUnavailable = LiveSoftwareEchoFactory.unavailableForTesting()
-        }
+        if (testName.methodName.startsWith("missingSpeaker")) org.junit.Assume.assumeFalse(AcousticEchoCanceler.isAvailable())
+        else org.junit.Assume.assumeTrue(AcousticEchoCanceler.isAvailable())
         val model = runBlocking(Dispatchers.IO) { LiveAudioCorpus.model(compose.activity) }
         audio = EmulatorAudioBridge()
         h = NativeLiveAudioHarness(compose, inputFactory = { session ->
@@ -45,9 +41,9 @@ class LiveSpeakerSafetyBehaviorTest {
         h.mount()
     }
     @After fun cleanup() {
-        if (::h.isInitialized) h.dumpSoftwareEchoDiagnostics()
+        if (::h.isInitialized) h.dumpAudioDiagnostics()
         try { if (::h.isInitialized) h.close() }
-        finally { try { if (::audio.isInitialized) audio.close() } finally { softwareUnavailable?.close() } }
+        finally { if (::audio.isInitialized) audio.close() }
     }
     @Test fun missingSpeakerAecFailsClosedWithHeadphonesGuidanceAndNoCaptureOrCue() {
         audio.startCapture(); h.start()
@@ -60,7 +56,7 @@ class LiveSpeakerSafetyBehaviorTest {
         assertTrue(h.submissions.isEmpty())
     }
 
-    @Test fun realSoftwareAecOnFrameworkAecLessSpeakerPreservesEchoAndNearEndBargeIn() {
+    @Test fun platformAecOnSpeakerPreservesEchoAndNearEndBargeIn() {
         h.start()
         h.await("Real software-protected capture must become ready") {
             h.snapshot.state == LiveConversationState.Listening || h.snapshot.state is LiveConversationState.Failure
