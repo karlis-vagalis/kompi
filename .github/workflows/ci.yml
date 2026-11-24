@@ -225,8 +225,9 @@ jobs:
           export PATH="$ANDROID_HOME/platform-tools:$PATH"
           adb version
           echo no | "$tools/avdmanager" create avd -n reply-ci -k 'system-images;android-35;google_apis;x86_64'
-          "$ANDROID_HOME/emulator/emulator" -avd reply-ci -port 5554 -no-window -no-audio -no-snapshot -gpu swiftshader_indirect >"$RUNNER_TEMP/emulator.log" 2>&1 &
-          trap 'adb -s emulator-5554 emu kill || true' EXIT
+          df -h "$HOME"
+          "$ANDROID_HOME/emulator/emulator" -avd reply-ci -port 5554 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader -memory 2048 -partition-size 2048 >"$RUNNER_TEMP/emulator.log" 2>&1 &
+          trap 'tail -100 "$RUNNER_TEMP/emulator.log"; adb -s emulator-5554 emu kill || true' EXIT
           export ANDROID_SERIAL=emulator-5554
           # shellcheck disable=SC2016 # boot property must be polled by the bounded child shell
           timeout 300 bash -c 'adb wait-for-device; until [[ $(adb shell getprop sys.boot_completed | tr -d "\r") == 1 ]]; do sleep 2; done'
