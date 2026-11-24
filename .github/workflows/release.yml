@@ -25,6 +25,8 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
           [[ "$(git rev-parse "$GITHUB_REF^{commit}")" == "$GITHUB_SHA" ]]
           git merge-base --is-ancestor HEAD origin/main
+          cargo metadata --locked --no-deps --format-version 1 | jq -e --arg v "${GITHUB_REF_NAME#v}" '
+            [.packages[] | select(.name == "kompi-daemon" or .name == "kompi-protocol") | .version] == [$v, $v]'
   build:
     needs: authorize
     uses: ./.github/workflows/ci.yml
@@ -52,15 +54,23 @@ jobs:
           trap 'rm -f "$key"' EXIT
           printf '%s' "$KEYSTORE" | base64 -d > "$key"
           signer="$ANDROID_HOME/build-tools/35.0.0/apksigner"
-          version=$("${signer%/*}/aapt" dump badging app-release-unsigned.apk | awk -F "'" '/^package: / {print $6}')
-          [[ "v$version" == "$GITHUB_REF_NAME" ]]
-          "$signer" sign --ks "$key" --ks-key-alias "$KEY_ALIAS" --ks-pass env:STORE_PASS --key-pass env:KEY_PASS --out kompi.apk app-release-unsigned.apk
-          "$signer" verify --verbose --print-certs kompi.apk > cert.txt
-          grep -Fx "Signer #1 certificate SHA-256 digest: $CERT" cert.txt
+          for abi in arm64-v8a x86_64; do
+            input="app-$abi-release-unsigned.apk"
+            output=kompi.apk
+            if [[ "$abi" == x86_64 ]]; then output=kompi-x86_64.apk; fi
+            "$signer" sign --ks "$key" --ks-key-alias "$KEY_ALIAS" --ks-pass env:STORE_PASS --key-pass env:KEY_PASS --out "$output" "$input"
+            "$signer" verify --verbose --print-certs "$output" > cert.txt
+            grep -Fx "Signer #1 certificate SHA-256 digest: $CERT" cert.txt
+            "${signer%/*}/aapt" dump badging "$output" > badging.txt
+            grep -F "package: name='com.kompi.app' versionCode='3' versionName='${GITHUB_REF_NAME#v}' " badging.txt
+            grep -Fx "native-code: '$abi'" badging.txt
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: signed-apk
-          path: kompi.apk
+          path: |
+            kompi.apk
+            kompi-x86_64.apk
           if-no-files-found: error
   publish:
     needs: sign
@@ -86,7 +96,7 @@ jobs:
           for host in "${hosts[@]}"; do
             [[ "$(sha256sum "$host" | cut -d' ' -f1)" == "$(awk 'NR==1 {print $1}' "$host.sha256")" ]]
           done
-          assets=(kompi.apk kompi-daemon-installer.sh kompi-daemon-installer.ps1 "${hosts[@]}" rust-dependency-sources.tar.gz)
+          assets=(kompi.apk kompi-x86_64.apk kompi-daemon-installer.sh kompi-daemon-installer.ps1 "${hosts[@]}" rust-dependency-sources.tar.gz)
           sha256sum "${assets[@]}" > SHA256SUMS
           assets+=(SHA256SUMS)
           releases="repos/$GH_REPO/releases"
