@@ -24,7 +24,10 @@ internal fun ChatBehaviorSurface(
     peer: String? = "Behavior test host",
     initialDraft: String = "",
     history: ChatHistory? = null,
+    configuration: com.kompi.app.protocol.generated.ChatModelConfiguration? = com.kompi.app.protocol.generated.ChatModelConfiguration("high", "fixture-model", "fixture"),
+    catalog: com.kompi.app.protocol.generated.ModelCatalog? = null,
     onRefreshModels: () -> Unit = {},
+    onSelectModel: (com.kompi.app.protocol.generated.ChatModelConfiguration) -> Unit = {},
     attachmentShareReceipt: StateFlow<AttachmentShareReceipt?> = MutableStateFlow(null),
     attachmentShareImporting: StateFlow<Boolean> = MutableStateFlow(false),
     appearance: AppTheme = AppTheme.System,
@@ -72,13 +75,13 @@ internal fun ChatBehaviorSurface(
             onCancelPrompt = {},
             onUpload = { _, _ -> error("Unexpected upload in text scenario") },
             onSend = { text, attachments, _, _ -> onSend(text, attachments) },
-            modelCatalog = null,
-            chatConfiguration = null,
+            modelCatalog = catalog,
+            chatConfiguration = configuration,
             confirmedConfiguration = null,
             modelsLoading = false,
             modelError = null,
             onRefreshModels = onRefreshModels,
-            onSelectModel = {},
+            onSelectModel = onSelectModel,
         )
         }
     }

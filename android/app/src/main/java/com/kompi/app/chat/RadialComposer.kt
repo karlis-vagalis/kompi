@@ -146,7 +146,7 @@ fun RadialComposer(
         }
         Box(Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 20.dp).fillMaxWidth(0.36f)) {
             com.kompi.app.ui.KompiTextButton(onClick = onModelSelection, enabled = modelSelectionEnabled, modifier = Modifier.heightIn(min = 48.dp)) {
-                com.kompi.app.ui.KompiText(modelLabel, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                com.kompi.app.ui.KompiText(modelLabel, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             }
         }
         if (menuExpanded) {

@@ -1391,10 +1391,6 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
             if (!isCurrent(generation) || store.selectedMachineId() != hostId) return
             modelCatalogHost = hostId
             _modelCatalog.value = catalog
-            if (_chatConfiguration.value == null) {
-                val initial = _confirmedConfiguration.value ?: catalog.defaultConfiguration
-                initial?.let { selectChatModel(it) }
-            }
         } catch (timeout: kotlinx.coroutines.TimeoutCancellationException) {
             if (isCurrent(generation)) _modelError.value = "Loading models timed out. Retry when the computer is ready."
         } catch (cancelled: CancellationException) { throw cancelled }

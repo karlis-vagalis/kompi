@@ -2373,14 +2373,14 @@ internal fun ConversationScreen(
                         }
                     }
                 }
-                val sendEnabled = draftsLoaded && pendingCapture == null && dictationSendAllowed(dictationPhase, dictationPartial != null, dictationStartFence.hasRequest) && !startingNewChat && !importingAttachments && !importingSharedAttachments && (composerFieldState.text.isNotBlank() || draftAttachments.isNotEmpty()) && canSend &&
+                val sendEnabled = chatConfiguration != null && draftsLoaded && pendingCapture == null && dictationSendAllowed(dictationPhase, dictationPartial != null, dictationStartFence.hasRequest) && !startingNewChat && !importingAttachments && !importingSharedAttachments && (composerFieldState.text.isNotBlank() || draftAttachments.isNotEmpty()) && canSend &&
                     (draftAttachments.isEmpty() || canSendAttachments) && draftAttachments.size <= AttachmentDraftStore.MAX_DRAFT_ATTACHMENTS && composer.revision !in submittingRevisions
                 val canAddAttachment = draftsLoaded && peerName != null && !liveActive && !importingAttachments && !importingSharedAttachments && draftAttachments.size < AttachmentDraftStore.MAX_DRAFT_ATTACHMENTS
                 val sendAction: @Composable () -> Unit = {
                     ChatActionButton(
                         label = "Send message",
                         onClick = {
-                            if (pendingCapture != null || !dictationSendAllowed(dictationPhase, dictationPartial != null, dictationStartFence.hasRequest)) return@ChatActionButton
+                            if (chatConfiguration == null || pendingCapture != null || !dictationSendAllowed(dictationPhase, dictationPartial != null, dictationStartFence.hasRequest)) return@ChatActionButton
                             if (liveActive) liveController.stopLocally(com.kompi.app.live.LiveLocalStopReason.Backgrounded)
                             val submitted = composer.copy(text = composerFieldState.text.toString()).snapshot()
                             val submittedAttachments = draftAttachments.toList()
@@ -2412,7 +2412,7 @@ internal fun ConversationScreen(
                             }
                         },
                         enabled = sendEnabled,
-                        tone = if ((composer.text.isNotBlank() || draftAttachments.isNotEmpty()) && canSend) ChatActionTone.Primary else ChatActionTone.Quiet,
+                        tone = if (sendEnabled) ChatActionTone.Primary else ChatActionTone.Quiet,
                         visualSize = 40.dp,
                     ) {
                         ChatLucideIcon(LucideR.drawable.lucide_ic_send_horizontal, null, modifier = Modifier.size(20.dp), tint = if (sendEnabled) KompiUi.colors.onPrimary else KompiUi.colors.onSurfaceVariant)
@@ -2432,7 +2432,7 @@ internal fun ConversationScreen(
                     onDictation = { toggleDictation() },
                     onModelSelection = { modelPickerExpanded = true; if (modelCatalog == null && !modelsLoading) onRefreshModels() },
                     modelSelectionEnabled = peerName != null,
-                    modelLabel = chatConfiguration?.let { "${it.modelId} · ${it.effort}" } ?: "Model",
+                    modelLabel = chatConfiguration?.let { "${it.modelId} · ${it.effort}" } ?: if (peerName != null) "Choose a model to send" else "Model",
                     onNewChat = {
                         startingNewChat = true
                         sendScope.launch {

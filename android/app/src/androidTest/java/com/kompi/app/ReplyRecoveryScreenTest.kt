@@ -15,6 +15,33 @@ import org.junit.Test
 class ReplyRecoveryScreenTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
+    @Test fun firstSendRequiresExplicitModelSelectionAndPreservesDraft() {
+        val default = com.kompi.app.protocol.generated.ChatModelConfiguration("high", "fixture-model", "fixture")
+        val choices = com.kompi.app.protocol.generated.ModelCatalog(default, listOf(
+            com.kompi.app.protocol.generated.ChatModel(listOf("high"), default.modelId, "Fixture model", default.provider)))
+        var selected by mutableStateOf<com.kompi.app.protocol.generated.ChatModelConfiguration?>(null)
+        var catalog by mutableStateOf<com.kompi.app.protocol.generated.ModelCatalog?>(null)
+        var reads = 0
+        val sent = mutableListOf<String>()
+        compose.setContent {
+            ChatBehaviorSurface(configuration = selected, catalog = catalog,
+                onRefreshModels = { reads++; catalog = choices }, onSelectModel = { selected = it },
+                onSend = { text, _ -> sent += text; "fixture-request" })
+        }
+        compose.onNodeWithTag("prompt-input").performTextInput("First draft")
+        compose.onNodeWithContentDescription("Send message").assertIsNotEnabled()
+        compose.runOnIdle { assertEquals(0, reads) }
+        compose.onNodeWithText("Choose a model to send").assertIsDisplayed().performClick()
+        compose.onNodeWithText("Cancel").performClick()
+        compose.onNodeWithContentDescription("Send message").assertIsNotEnabled()
+        compose.onNodeWithText("First draft").assertIsDisplayed()
+        compose.onNodeWithText("Choose a model to send").performClick()
+        compose.onNodeWithText("Apply").performClick()
+        compose.runOnIdle { assertEquals(default, selected); assertEquals(1, reads); assertEquals(emptyList<String>(), sent) }
+        compose.onNodeWithContentDescription("Send message").assertIsEnabled().performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick)
+        compose.runOnIdle { assertEquals(listOf("First draft"), sent); assertEquals(1, reads) }
+    }
+
     @Test fun disconnectedCompletionReopensWithReadableReplyAndBoundedRetry() {
         val target = ConversationTarget.saved("host-a", "00000000-0000-4000-8000-000000000001")
         val store = PiSessionStore(needSnapshot = {}, publicDelta = { _, _, _, _, _ -> }, settled = { _, _, _, _ -> })
@@ -55,7 +82,7 @@ class ReplyRecoveryScreenTest {
         compose.onNodeWithText("Recovered final reply").assertIsDisplayed()
         compose.onNodeWithText("Loading conversation…").assertDoesNotExist()
         compose.runOnIdle { assertEquals(3, requests); assertEquals(0, sends); assertEquals(0, modelReads) }
-        compose.onNodeWithText("Model").performClick()
+        compose.onNodeWithText("fixture-model · high").performClick()
         compose.runOnIdle { assertEquals(1, modelReads) }
     }
 }

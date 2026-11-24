@@ -35,7 +35,7 @@ fun ChatModelPicker(
     onApply: (ChatModelConfiguration) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var choice by remember(selected, catalog) { mutableStateOf(selected) }
+    var choice by remember(selected, catalog) { mutableStateOf(selected ?: catalog?.defaultConfiguration) }
     var expanded by remember { mutableStateOf(false) }
     var applyError by remember { mutableStateOf<String?>(null) }
     val model = catalog?.models?.firstOrNull { it.provider == choice?.provider && it.modelId == choice?.modelId }

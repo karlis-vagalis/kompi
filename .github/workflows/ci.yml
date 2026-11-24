@@ -232,4 +232,4 @@ jobs:
           adb install debug/app-debug.apk
           adb install androidTest/debug/app-debug-androidTest.apk
           adb shell am instrument -w -e class 'com.kompi.app.ReplyRecoveryScreenTest,com.kompi.app.ChatTransportContinuityTest#completedOfflineNeedsReadableReplyAfterReopen,com.kompi.app.ChatTransportContinuityTest#firstTurnCompletesWithoutLeavingNewChat,com.kompi.app.ChatProjectionBehaviorTest#r3_s1_eventsBufferedBeforeSnapshotApplyOnlyAfterItsBarrier' com.kompi.app.test/androidx.test.runner.AndroidJUnitRunner | tee "$RUNNER_TEMP/result"
-          grep -Eq '^OK \(4 tests\)' "$RUNNER_TEMP/result"
+          grep -Eq '^OK \(5 tests\)' "$RUNNER_TEMP/result"
