@@ -6,9 +6,10 @@ default:
 apk:
     cd android && ./gradlew --no-daemon :app:assembleDebug
 
-# Build the release APK locally (not a publication step).
+# Build and verify standalone arm64-v8a and x86_64 release APKs (unsigned).
 apk-release:
     cd android && ./gradlew --no-daemon :app:assembleRelease
+    for abi in arm64-v8a x86_64; do python3 scripts/verify-android-package.py "android/app/build/outputs/apk/release/app-$abi-release-unsigned.apk" "$abi" || exit 1; done
 
 # List connected Android devices and emulators.
 devices:

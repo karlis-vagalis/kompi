@@ -11,11 +11,10 @@ android {
     ndkVersion = "30.0.16248370"
     defaultConfig {
         applicationId = "com.kompi.app"
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
         buildConfigField("boolean", "PI_FRAME_COALESCING", providers.gradleProperty("piFrameCoalescing").orElse("false").map { it.toBooleanStrict().toString() }.get())
         buildConfigField("boolean", "PI_EAGER_FIRST_PARSE", providers.gradleProperty("piEagerFirstParse").orElse("true").map { it.toBooleanStrict().toString() }.get())
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -29,8 +28,15 @@ android {
         jniLibs.srcDir("../.native-build/jni")
         assets.srcDir("../.native-build/assets")
     }
+    splits.abi {
+        isEnable = true
+        reset()
+        include("arm64-v8a", "x86_64")
+        isUniversalApk = true // Enabled only for debug below.
+    }
     buildTypes {
         debug {
+            ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
             buildConfigField("boolean", "CHAT_STREAMS", providers.gradleProperty("chatStreams").orElse("false").get().toBooleanStrict().toString())
         }
         release {
@@ -52,6 +58,15 @@ android {
     testOptions { unitTests.isIncludeAndroidResources = true }
 }
 
+
+androidComponents.onVariants { variant ->
+    for (output in variant.outputs) {
+        val universal = output.filters.isEmpty()
+        val debug = variant.buildType == "debug"
+        output.enabled.set(universal == debug)
+        if (debug && universal) output.outputFileName.set("app-debug.apk")
+    }
+}
 
 tasks.named("preBuild") {
     doFirst {
