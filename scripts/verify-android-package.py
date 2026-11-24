@@ -14,7 +14,7 @@ staged = root / 'android/.native-build'
 libs = {
     'libandroidx.graphics.path.so', 'libdatastore_shared_counter.so',
     'libimage_processing_util_jni.so', 'libiroh_ffi.so', 'libjnidispatch.so',
-    'libkompi_aec.so', 'libmediapipe_tasks_audio_jni.so', 'libmediapipe_tasks_jni.so',
+    'libmediapipe_tasks_audio_jni.so', 'libmediapipe_tasks_jni.so',
     'libonnxruntime.so', 'libonnxruntime4j_jni.so', 'libsurface_util_jni.so',
 }
 

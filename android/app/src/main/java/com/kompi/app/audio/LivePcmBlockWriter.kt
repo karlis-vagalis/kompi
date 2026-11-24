@@ -2,14 +2,11 @@ package com.kompi.app.audio
 
 import android.media.AudioTrack
 
-/** Final, clipped PCM in source-rate 10 ms blocks. One analysis immediately precedes each bounded
- * hardware block; ALL successful partial writes finish before another block is analyzed. A final
- * short block is padded only for reference conversion, never written as invented output/mic samples.
- */
+/** Write clipped samples in bounded blocks; count only frames accepted by AudioTrack. */
 internal class LivePcmBlockWriter(
     private val track: AudioTrack,
     rate: Int,
-    private val reference: DuplexEchoProcessor.RenderLease?,
+    private val reference: LiveAudioSession.RenderLease?,
     private val checkRunning: () -> Unit,
 ) {
     private val block = FloatArray(rate / 100)
@@ -21,7 +18,6 @@ internal class LivePcmBlockWriter(
         require(start >= 0 && count >= 0 && start <= samples.size - count)
         for (i in start until start + count) {
             if (!samples[i].isFinite()) {
-                reference?.rejectPcm()
                 throw LiveAudioStartException(LiveAudioStartIssue.EchoUnavailable)
             }
         }
@@ -49,18 +45,14 @@ internal class LivePcmBlockWriter(
 
     private fun writeBlock(count: Int): Int {
         checkRunning()
-        val pending = reference?.beginWrite()
-        try {
-            reference?.analyze(block, 0, count)
-            var offset = 0
-            while (offset < count) {
-                checkRunning()
-                val written = track.write(block, offset, count - offset, AudioTrack.WRITE_BLOCKING)
-                check(written > 0) { "AudioTrack PCM write failed ($written)" }
-                reference?.accepted(block, offset, written)
-                offset += written
-            }
-            return offset
-        } finally { pending?.close() }
+        var offset = 0
+        while (offset < count) {
+            checkRunning()
+            val written = track.write(block, offset, count - offset, AudioTrack.WRITE_BLOCKING)
+            check(written > 0) { "AudioTrack PCM write failed ($written)" }
+            reference?.written(written)
+            offset += written
+        }
+        return offset
     }
 }

@@ -2,13 +2,12 @@ package com.kompi.app.audio
 
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AudioEffect
-import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Disabled leaves source defaults alone; SoftwareOwned obtains and explicitly disables controls. */
-enum class EchoCancellationPolicy { Disabled, Optional, Required, SoftwareOwned }
+/** Leave capture defaults untouched, request platform processing, or require speaker AEC. */
+enum class EchoCancellationPolicy { Disabled, Optional, Required }
 
 /** Actual public API control observations, separate from recording-configuration descriptors.
  * policy is EchoCancellationPolicy.ordinal; phase 0 configuring, 1 ready, 2 failed, 3 released.
@@ -67,81 +66,9 @@ internal class MicrophoneEffects private constructor(
         }
     }
 
-    private fun disable(kind: Kind, available: () -> Boolean, create: () -> AudioEffect?) {
-        var stage = 1
-        try {
-            val exists = available()
-            record(kind, available = if (exists) 1 else 0)
-            if (!exists) return // No advertised implementation; not a claim about hidden vendor DSP.
-            stage = 2
-            val effect = checkNotNull(create())
-            effects += kind to effect
-            record(kind, created = 1)
-            stage = 3
-            val control = effect.hasControl()
-            val initial = effect.enabled
-            record(kind, control = if (control) 1 else 0, initial = if (initial) 1 else 0)
-            check(control)
-            stage = 4
-            val status = effect.setEnabled(false) // Obtain and request OFF even if already OFF.
-            record(kind, status = status)
-            check(status == AudioEffect.SUCCESS)
-            stage = 5
-            val enabled = effect.enabled
-            val retainedControl = effect.hasControl()
-            record(kind, control = if (retainedControl) 1 else 0, enabled = if (enabled) 1 else 0)
-            check(retainedControl && !enabled)
-        } catch (_: Exception) {
-            unsafe.set(true)
-            update { it.copy(phase = 2, failureEffect = kind.bit, failureStage = stage, unsafeMask = it.unsafeMask or kind.bit) }
-            throw LiveAudioStartException(LiveAudioStartIssue.PreprocessingUnavailable)
-        }
-    }
-
-    private fun controlChanged(kind: Kind, control: Boolean? = null, enabled: Boolean? = null) {
-        val bad = control == false || enabled == true
-        val notify = synchronized(stateLock) {
-            if (released.get()) return
-            // Latch safety BEFORE publishing any bad observation/readiness can race with it.
-            val firstUnsafe = bad && unsafe.compareAndSet(false, true)
-            record(kind, control = control?.let { if (it) 1 else 0 }, enabled = enabled?.let { if (it) 1 else 0 })
-            if (bad) update { it.copy(phase = 2, failureEffect = kind.bit,
-                failureStage = if (control == false) 6 else 7, unsafeMask = it.unsafeMask or kind.bit) }
-            firstUnsafe
-        }
-        // No metadata/resource lock may precede the actual hardware privacy stop.
-        if (notify) onUnsafe()
-    }
-
-    private fun configureSoftware() {
-        disable(Kind.Aec, AcousticEchoCanceler::isAvailable) { AcousticEchoCanceler.create(sessionId) }
-        disable(Kind.Ns, NoiseSuppressor::isAvailable) { NoiseSuppressor.create(sessionId) }
-        disable(Kind.Agc, AutomaticGainControl::isAvailable) { AutomaticGainControl.create(sessionId) }
-        for ((kind, effect) in effects) {
-            try {
-                effect.setControlStatusListener { _, control -> controlChanged(kind, control = control) }
-                effect.setEnableStatusListener { _, enabled -> controlChanged(kind, enabled = enabled) }
-                // Close the setup window between the initial OFF proof and listener install.
-                val control = effect.hasControl()
-                val enabled = effect.enabled
-                record(kind, control = if (control) 1 else 0, enabled = if (enabled) 1 else 0)
-                if (!control || enabled) controlChanged(kind, control = control, enabled = enabled)
-            } catch (_: Exception) {
-                unsafe.set(true)
-                update { it.copy(phase = 2, failureEffect = kind.bit, failureStage = 8, unsafeMask = it.unsafeMask or kind.bit) }
-                throw LiveAudioStartException(LiveAudioStartIssue.PreprocessingUnavailable)
-            }
-        }
-        synchronized(stateLock) {
-            requireSafe()
-            update { it.copy(phase = 1) }
-        }
-    }
-
-    /** Pure local flags only; safe immediately BEFORE startRecording, never an effect/JNI query. */
     fun requireSafe() {
-        if (policy == EchoCancellationPolicy.SoftwareOwned && (unsafe.get() || released.get()))
-            throw LiveAudioStartException(LiveAudioStartIssue.PreprocessingUnavailable)
+        if (policy == EchoCancellationPolicy.Required && (unsafe.get() || released.get()))
+            throw LiveAudioStartException(LiveAudioStartIssue.EchoUnavailable)
     }
 
     override fun close() {
@@ -156,8 +83,7 @@ internal class MicrophoneEffects private constructor(
             val result = MicrophoneEffects(sessionId, policy, publish, onUnsafe)
             result.update { it }
             try {
-                if (policy == EchoCancellationPolicy.SoftwareOwned) result.configureSoftware()
-                else if (policy != EchoCancellationPolicy.Disabled) {
+                if (policy != EchoCancellationPolicy.Disabled) {
                     var echo: AcousticEchoCanceler? = null
                     if (AcousticEchoCanceler.isAvailable()) {
                         echo = AcousticEchoCanceler.create(sessionId)
@@ -165,20 +91,27 @@ internal class MicrophoneEffects private constructor(
                     }
                     if (policy == EchoCancellationPolicy.Required && echo?.enabled != true)
                         throw LiveAudioStartException(LiveAudioStartIssue.EchoUnavailable)
+                    if (policy == EchoCancellationPolicy.Required) {
+                        echo?.setEnableStatusListener { _, enabled ->
+                            if (!enabled && !result.released.get() && result.unsafe.compareAndSet(false, true)) onUnsafe()
+                        }
+                        check(echo?.enabled == true)
+                    }
+                    if (echo != null) result.record(Kind.Aec, created = 1, enabled = if (echo.enabled) 1 else 0)
                     // Preserve the existing optional hardware-AEC/headset behavior.
                     runCatching {
                         if (NoiseSuppressor.isAvailable()) NoiseSuppressor.create(sessionId) else null
                     }.getOrNull()?.let { effect ->
                         result.effects += Kind.Ns to effect
                         runCatching { effect.setEnabled(true) }
+                        result.record(Kind.Ns, created = 1, enabled = if (effect.enabled) 1 else 0)
                     }
                     result.update { it.copy(phase = 1) }
+                    android.util.Log.i("KompiLiveAudio", "platform capture: policy=$policy aec=${result.state.aecEnabled} ns=${result.state.nsEnabled}")
                 } else result.update { it.copy(phase = 1) }
                 return result
             } catch (error: Exception) {
                 result.close()
-                if (policy == EchoCancellationPolicy.SoftwareOwned)
-                    throw LiveAudioStartException(LiveAudioStartIssue.PreprocessingUnavailable)
                 if (policy == EchoCancellationPolicy.Required)
                     throw LiveAudioStartException(LiveAudioStartIssue.EchoUnavailable)
                 return MicrophoneEffects(sessionId, policy, publish, onUnsafe).also { it.update { s -> s.copy(phase = 1) } }

@@ -6,7 +6,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.kompi.app.audio.EchoCancellationPolicy
 import com.kompi.app.audio.SpeechUtteranceId
 import com.kompi.app.audio.StreamingSpeechDecoder
-import com.kompi.app.audio.WebRtcAec3Native
 import com.kompi.app.audio.live.CaptureMeter
 import com.kompi.app.audio.live.LiveSpeechGate
 import com.kompi.app.audio.live.LiveSpeechGateEvent
@@ -140,51 +139,6 @@ class LiveSpeechClassifierBehaviorTest {
         val events = gateEvents(SileroSpeechClassifier(context), mixture)
         assertTrue("Generated near-end speech should confirm in this explicitly level-bounded synthetic mixture", LiveSpeechGateEvent.SpeechConfirmed in events)
         assertTrue("Speech should separately pass barge-in hysteresis", LiveSpeechGateEvent.BargeInConfirmed in events)
-    }
-
-    @Test fun moderateApmNoiseSuppressionAttenuatesSteadyBroadbandNoise() {
-        val handle = WebRtcAec3Native.create()
-        assertTrue("Pinned APM should initialize for its software-owned path", handle != 0L)
-        val random = Random(1313)
-        var inputSquares = 0.0
-        var outputSquares = 0.0
-        var measuredSamples = 0
-        try {
-            repeat(120) { block ->
-                val input = FloatArray(160) { (random.nextFloat() * 2f - 1f) * 0.18f }
-                val output = FloatArray(160)
-                assertTrue("APM capture failed on deterministic noise block $block", WebRtcAec3Native.capture(handle, input, 0, output) == 0)
-                if (block >= 60) for (index in input.indices) {
-                    inputSquares += input[index] * input[index]
-                    outputSquares += output[index] * output[index]
-                    measuredSamples++
-                }
-            }
-            val inputRms = kotlin.math.sqrt(inputSquares / measuredSamples)
-            val outputRms = kotlin.math.sqrt(outputSquares / measuredSamples)
-            assertTrue("Moderate APM NS should reduce this stationary-noise fixture: input=$inputRms output=$outputRms", outputRms < inputRms * 0.95)
-        } finally { WebRtcAec3Native.destroy(handle) }
-    }
-
-    @Test fun softwareApmNoiseSuppressionBeforeSileroDoesNotConfirmSteadyNoise() {
-        val handle = WebRtcAec3Native.create()
-        assertTrue("Pinned APM should initialize for its software-owned path", handle != 0L)
-        val gate = LiveSpeechGate(SileroSpeechClassifier(context))
-        val random = Random(20261113)
-        val events = ArrayList<LiveSpeechGateEvent>()
-        try {
-            repeat(16_000 * 3 / 160) { block ->
-                val input = FloatArray(160) { (random.nextFloat() * 2f - 1f) * 0.18f }
-                val output = FloatArray(160)
-                assertTrue("APM capture failed before Silero on deterministic noise block $block", WebRtcAec3Native.capture(handle, input, 0, output) == 0)
-                events += gate.accept(output)
-            }
-            assertFalse("Noise processed by the software APM NS path must not confirm a turn; events=$events", LiveSpeechGateEvent.SpeechConfirmed in events)
-            assertFalse("Noise processed by the software APM NS path must not be flushable", gate.flush())
-        } finally {
-            gate.close()
-            WebRtcAec3Native.destroy(handle)
-        }
     }
 
     private data class ScoreSummary(val frames: Int, val positiveFrames: Int, val minimum: Float, val maximum: Float, val p95Ms: Double, val maxMs: Double)

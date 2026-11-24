@@ -136,10 +136,8 @@ class LocalLiveSpeechInput(
                     }, echoCancellation = session.echoPolicy, preferredInputDevice = session.preferredInputDevice,
                         checkAudioRoute = session::checkRoute, speechFrameClassifier = speechClassifier)
                         .also(recognizerRef::set)
-                    val echoBoundConsumer = session.protectCapture(preparedConsumer, record.acceptsFailures::get)
-                        ?.also(record.echoCapture::set) ?: preparedConsumer
                     permit.requireCurrent()
-                    echoBoundConsumer
+                    preparedConsumer
                 } catch (error: Throwable) {
                     val recognizer = recognizerRef.get()
                     if (recognizer != null) recognizer.discardAndJoin()
@@ -148,7 +146,6 @@ class LocalLiveSpeechInput(
                 }
             },
             // Android's communication-mode lease requires a communication capture source.
-            // The software consumer obtains and explicitly disables standard session processors.
             audioSource = MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             requireHardwarePermit = {
                 checkNotNull(recordRef.get()?.capturePermit?.get()) { "Microphone activation was fenced" }.requireCurrent()
@@ -196,7 +193,6 @@ class LocalLiveSpeechInput(
         }
         record.captureDemand.get()?.fence()
         record.microphone.requestStop()
-        record.echoCapture.getAndSet(null)?.close()
         readyTone.close()
         queueCleanup(record, finalizeCurrentUtterance = false)
     }
@@ -206,7 +202,6 @@ class LocalLiveSpeechInput(
         // Actual capture fence/stop precedes optional cue disposal and all worker scheduling.
         record?.captureDemand?.get()?.fence()
         record?.microphone?.requestStop()
-        record?.echoCapture?.getAndSet(null)?.close()
         readyTone.close()
         if (record != null) queueCleanup(record, finalizeCurrentUtterance = false)
         else worker.shutdown()
@@ -220,7 +215,6 @@ class LocalLiveSpeechInput(
         }
         record?.captureDemand?.get()?.fence()
         record?.microphone?.requestStop()
-        record?.echoCapture?.getAndSet(null)?.close()
         readyTone.close()
         if (record == null) { worker.shutdown(); return }
         queueCleanup(record, finalizeCurrentUtterance)
@@ -276,7 +270,6 @@ class LocalLiveSpeechInput(
                     // Bounded privacy completion is separate. A hung reader retains hardware,
                     // consumer and native decoder; never dispose VAD/JNI underneath onAudio().
                     record.microphone.awaitReaderExit()
-                    record.echoCapture.getAndSet(null)?.close()
                     record.binding.getAndSet(null)?.close()
                     if (!record.borrowedSession) record.audioSession.getAndSet(null)?.close()
                     record.recognizer.get()?.let { recognizer ->
@@ -317,7 +310,6 @@ class LocalLiveSpeechInput(
         val audioSession: AtomicReference<LiveAudioSession?>,
         val borrowedSession: Boolean,
         val binding: AtomicReference<Closeable?> = AtomicReference(),
-        val echoCapture: AtomicReference<Closeable?> = AtomicReference(),
         val captureDemand: AtomicReference<LiveAudioSession.CaptureDemand?> = AtomicReference(),
         val capturePermit: AtomicReference<LiveAudioSession.CommunicationPermit?> = AtomicReference(),
         val hardwareStopped: CompletableDeferred<Unit> = CompletableDeferred(),

@@ -7,7 +7,6 @@ import android.media.AudioTrack
 import android.os.Build
 import android.util.Log
 import com.kompi.app.R
-import com.kompi.app.audio.DuplexEchoProcessor
 import com.kompi.app.audio.LiveAudioSession
 import com.kompi.app.audio.LivePcmBlockWriter
 import java.io.ByteArrayOutputStream
@@ -35,7 +34,7 @@ internal class LiveReadyTone(context: Context) : Closeable {
     private var session: LiveAudioSession? = null
     private var binding: Closeable? = null
     private var track: AudioTrack? = null
-    private var reference: DuplexEchoProcessor.RenderLease? = null
+    private var reference: LiveAudioSession.RenderLease? = null
 
     init {
         val resources = context.resources
@@ -96,7 +95,7 @@ internal class LiveReadyTone(context: Context) : Closeable {
             Pair(cue ?: return, session ?: return).also { writerStarted = true }
         }
         var owned: AudioTrack? = null
-        var rendered: DuplexEchoProcessor.RenderLease? = null
+        var rendered: LiveAudioSession.RenderLease? = null
         var demand: LiveAudioSession.OutputDemand? = null
         try {
             // This background writer owns the cue demand through its actual track finally.
@@ -144,7 +143,7 @@ internal class LiveReadyTone(context: Context) : Closeable {
             if (!started && offset > 0) owner.whileActive {
                 synchronized(lock) { if (!closed) { playback.play(); started = true } }
             }
-            rendered?.finishWrites()
+
             val deadline = System.nanoTime() + sound.samples.size * 1_000_000_000L / sound.rate + 2_000_000_000L
             while (started && !synchronized(lock) { closed } &&
                 (playback.playbackHeadPosition.toLong() and 0xffff_ffffL) < offset && System.nanoTime() < deadline) {
@@ -175,7 +174,7 @@ internal class LiveReadyTone(context: Context) : Closeable {
         }
         stopped.first?.let { player ->
             runCatching { player.pause() }
-            stopped.second?.freeze()
+
             runCatching { player.flush() }
         }
         stopped.third?.close()

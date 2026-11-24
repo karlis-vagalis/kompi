@@ -40,7 +40,7 @@ internal abstract class NativeMicrophoneScenario {
         })
         h.mount()
     }
-    @After fun cleanup() { if (::h.isInitialized) { h.dumpSoftwareEchoDiagnostics(); h.close() }; if (::audio.isInitialized) audio.close() }
+    @After fun cleanup() { if (::h.isInitialized) { h.dumpAudioDiagnostics(); h.close() }; if (::audio.isInitialized) audio.close() }
     protected fun startListening() {
         h.start()
         h.await("Normal Live microphone must become ready or fail explicitly") { h.snapshot.state == LiveConversationState.Listening || h.snapshot.state is LiveConversationState.Failure }

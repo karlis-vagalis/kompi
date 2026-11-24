@@ -56,9 +56,6 @@ internal class LiveAssistantLockedCaptureProbe(private val context: Context) : A
     private val sessionField = field(controller, "audioSession")
     private val session = synchronized(ownershipLock) { requireNotNull(sessionField.get(controller)) }
     private val sessionLock = requireNotNull(field(session, "lock").get(session))
-    private val echoField = field(session, "echoProcessor")
-    private val echo = synchronized(sessionLock) { echoField.get(session) }
-    private val echoEnergy = echo?.let(::EchoEnergyObservation)
     private val keyguard = context.getSystemService(KeyguardManager::class.java)
     private val manager = context.getSystemService(AudioManager::class.java)
     private val meterFrames = AtomicLong()
@@ -80,14 +77,6 @@ internal class LiveAssistantLockedCaptureProbe(private val context: Context) : A
                     if (rmsMicros > 0) nonzeroMeterFrames.incrementAndGet()
                     meterPeakMicros.updateAndGet { maxOf(it, rmsMicros) }
                     meterLastNanos.set(SystemClock.elapsedRealtimeNanos())
-                }
-            }
-        }
-        echoEnergy?.let { energy ->
-            scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                while (isActive) {
-                    energy.observe()
-                    delay(10)
                 }
             }
         }
@@ -138,8 +127,6 @@ internal class LiveAssistantLockedCaptureProbe(private val context: Context) : A
         // Never nest the session/publication locks with AEC's processLock: the real capture
         // consumer may check the session while processing audio under processLock.
         val currentSession = synchronized(ownershipLock) { sessionField.get(controller) === session }
-        val currentEcho = synchronized(sessionLock) { echoField.get(session) === echo }
-        val energyMetrics = echoEnergy?.metrics() ?: emptyArray()
         val runtimeMetrics = runtime.metrics()
         val acquisitionMetrics = acquisition.metrics(sample)
         val sessionState = synchronized(sessionLock) { (field(session, "state").get(session) as Enum<*>).ordinal }
@@ -166,11 +153,9 @@ internal class LiveAssistantLockedCaptureProbe(private val context: Context) : A
             "meterPeakMicros" to meterPeakMicros.get(),
             "meterLastElapsedNanos" to meterLastNanos.get(),
             "meterNowMicros" to (AssistantCoordinator.snapshot.value.micLevel.value * 1_000_000).toLong(),
-            "aecPresent" to if (echo != null) 1 else 0,
-            "aecCurrentOwner" to if (echo != null && currentSession && currentEcho && sample.currentOwner) 1 else 0,
             "serviceInstanceCurrent" to if (serviceField.get(null) === service) 1 else 0,
             "audioSessionState" to sessionState,
-            *energyMetrics, *runtimeMetrics, *acquisitionMetrics, *metrics)
+            *runtimeMetrics, *acquisitionMetrics, *metrics)
         return sample
     }
 
@@ -407,135 +392,6 @@ internal class LiveAssistantLockedCaptureProbe(private val context: Context) : A
      * Deltas include EVERY intervening APM frame even if this test sampler is delayed. Frequent
      * observations retain interval-RMS peaks, not individual-frame peaks or a speech classifier.
      * An unexpected counter discontinuity is explicit rather than interpreted as zero energy. */
-    private class EchoEnergyObservation(private val processor: Any) {
-        private fun field(name: String) = processor.javaClass.getDeclaredField(name).apply { isAccessible = true }
-        private val processLock = requireNotNull(field("processLock").get(processor))
-        private val failed = field("failed").get(processor) as AtomicBoolean
-        private val closed = field("closed").get(processor) as AtomicBoolean
-        private val captureId = field("captureId").get(processor) as AtomicLong
-        // Optional diagnostics are absent on older frozen binaries. Missing is -1, never a
-        // fabricated success/zero cause. Read only the fixed numeric first-fault allowlist.
-        private val failureCode = runCatching { field("failureCode").get(processor) as AtomicInteger }.getOrNull()
-        private val nativeStatus = runCatching { field("nativeStatus") }.getOrNull()
-        private val firstFault = runCatching { field("firstFault").get(processor) as AtomicReference<*> }.getOrNull()
-        private val framesField = field("metricsFrames")
-        private val inputField = field("diagnosticTotalInputEnergy")
-        private val outputField = field("diagnosticTotalOutputEnergy")
-        private val referenceField = field("diagnosticTotalReferenceEnergy")
-        private val observationLock = Any()
-        private data class Totals(val frames: Long, val inputEnergy: Double, val outputEnergy: Double, val referenceEnergy: Double)
-        private var previous: Totals? = null
-        private var reads = 0L
-        private var observedFrames = 0L
-        private var counterDiscontinuities = 0L
-        private var rawEnergy = 0.0
-        private var cleanEnergy = 0.0
-        private var referenceEnergy = 0.0
-        private var rawNonzeroSpans = 0L
-        private var cleanNonzeroSpans = 0L
-        private var referenceNonzeroSpans = 0L
-        private var peakRawRmsMicros = 0L
-        private var peakCleanRmsMicros = 0L
-        private var peakReferenceRmsMicros = 0L
-        private var failureObservedElapsedNanos = 0L
-
-        private fun rmsMicros(energy: Double, frames: Long): Long =
-            if (frames == 0L) 0L else (sqrt(energy.coerceAtLeast(0.0) / (frames * 160)) * 1_000_000).toLong()
-
-        fun observe() { synchronized(observationLock) { observeLocked() } }
-
-        private fun observeLocked(): Totals {
-            val current = synchronized(processLock) {
-                Totals(framesField.getLong(processor), inputField.getDouble(processor),
-                    outputField.getDouble(processor), referenceField.getDouble(processor))
-            }
-            reads++
-            if (failed.get() && failureObservedElapsedNanos == 0L) failureObservedElapsedNanos = SystemClock.elapsedRealtimeNanos()
-            val last = previous
-            if (last != null) {
-                val discontinuity = current.frames < last.frames || current.inputEnergy < last.inputEnergy ||
-                    current.outputEnergy < last.outputEnergy || current.referenceEnergy < last.referenceEnergy
-                if (discontinuity) counterDiscontinuities++
-                else if (current.frames > last.frames) {
-                    val frames = current.frames - last.frames
-                    val input = current.inputEnergy - last.inputEnergy
-                    val output = current.outputEnergy - last.outputEnergy
-                    val reference = current.referenceEnergy - last.referenceEnergy
-                    observedFrames += frames
-                    rawEnergy += input
-                    cleanEnergy += output
-                    referenceEnergy += reference
-                    if (input > 0) rawNonzeroSpans++
-                    if (output > 0) cleanNonzeroSpans++
-                    if (reference > 0) referenceNonzeroSpans++
-                    peakRawRmsMicros = maxOf(peakRawRmsMicros, rmsMicros(input, frames))
-                    peakCleanRmsMicros = maxOf(peakCleanRmsMicros, rmsMicros(output, frames))
-                    peakReferenceRmsMicros = maxOf(peakReferenceRmsMicros, rmsMicros(reference, frames))
-                }
-            }
-            previous = current
-            return current
-        }
-
-        private fun faultValue(snapshot: Any?, name: String): Number {
-            if (snapshot == null) return -1
-            return when (val value = runCatching { snapshot.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(snapshot) }.getOrNull()) {
-                is Number -> value
-                is Boolean -> if (value) 1 else 0
-                else -> -1
-            }
-        }
-
-        fun metrics(): Array<Pair<String, Number>> = synchronized(observationLock) {
-            val current = observeLocked()
-            val fault = firstFault?.get()
-            val captureUncertainty = faultValue(fault, "captureUncertaintyNs").toLong()
-            val referenceUncertainty = faultValue(fault, "referenceUncertaintyNs").toLong()
-            val combinedUncertainty = if (captureUncertainty >= 0 && referenceUncertainty >= 0 &&
-                captureUncertainty <= Long.MAX_VALUE - referenceUncertainty) captureUncertainty + referenceUncertainty else -1L
-            arrayOf<Pair<String, Number>>(
-                "aecFailureDiagnosticsPresent" to if (failureCode != null && nativeStatus != null && firstFault != null) 1 else 0,
-                "aecFailureCode" to (failureCode?.get() ?: -1),
-                "aecNativeStatus" to (nativeStatus?.getInt(processor) ?: -1),
-                "aecFirstFaultPresent" to if (firstFault == null) -1 else if (fault == null) 0 else 1,
-                "aecFaultCode" to faultValue(fault, "code"),
-                "aecFaultNativeStatus" to faultValue(fault, "nativeStatus"),
-                "aecFaultCaptureFrames" to faultValue(fault, "captureFrames"),
-                "aecFaultCaptureUncertaintyNs" to captureUncertainty,
-                "aecFaultReferenceUncertaintyNs" to referenceUncertainty,
-                "aecFaultCombinedNs" to combinedUncertainty,
-                "aecFaultHasReference" to faultValue(fault, "hasReference"),
-                "aecFaultCaptureHardwareClock" to faultValue(fault, "captureHardware"),
-                "aecFaultReferenceHardwareClock" to faultValue(fault, "renderHardware"),
-                "aecFaultReferenceCount" to faultValue(fault, "referenceCount"),
-                "aecFaultConsumerFilled" to faultValue(fault, "consumerFilled"),
-                "aecFailed" to if (failed.get()) 1 else 0,
-                "aecFailureObservedElapsedNanos" to failureObservedElapsedNanos,
-                "aecClosed" to if (closed.get()) 1 else 0,
-                "aecCaptureId" to captureId.get(),
-                "aecFrames" to current.frames,
-                "aecTotalRawEnergy" to current.inputEnergy,
-                "aecTotalCleanEnergy" to current.outputEnergy,
-                "aecTotalReferenceEnergy" to current.referenceEnergy,
-                "aecTotalRawRmsMicros" to rmsMicros(current.inputEnergy, current.frames),
-                "aecTotalCleanRmsMicros" to rmsMicros(current.outputEnergy, current.frames),
-                "aecTotalReferenceRmsMicros" to rmsMicros(current.referenceEnergy, current.frames),
-                "aecMetricReads" to reads,
-                "aecObservedFrames" to observedFrames,
-                "aecGapFree" to if (counterDiscontinuities == 0L) 1 else 0,
-                "aecCounterDiscontinuities" to counterDiscontinuities,
-                "aecObservedRawEnergy" to rawEnergy,
-                "aecObservedCleanEnergy" to cleanEnergy,
-                "aecObservedReferenceEnergy" to referenceEnergy,
-                "aecRawNonzeroSpans" to rawNonzeroSpans,
-                "aecCleanNonzeroSpans" to cleanNonzeroSpans,
-                "aecReferenceNonzeroSpans" to referenceNonzeroSpans,
-                "aecPeakRawRmsMicros" to peakRawRmsMicros,
-                "aecPeakCleanRmsMicros" to peakCleanRmsMicros,
-                "aecPeakReferenceRmsMicros" to peakReferenceRmsMicros,
-            )
-        }
-    }
 }
 
 /** Retains the actual assistant owner AFTER listening, before injection. Unlike the L90 probe,
@@ -562,7 +418,6 @@ internal class LiveAssistantMetadataOnlyProbe(@Suppress("UNUSED_PARAMETER") cont
     private val captureOwner = (value(active, "audioSession") as AtomicReference<*>).get().also { check(it === session) }
     private val recognizer = (value(active, "recognizer") as AtomicReference<*>).get()
     private val sessionLock = checkNotNull(value(session, "lock"))
-    private val processor = synchronized(sessionLock) { value(session, "echoProcessor") }
     private val acquisition = NativeAcquisitionDiagnostics(input, session, 1)
     private val observerJob = SupervisorJob()
     // RuntimeObservation launches only short Unconfined flow collectors; no Default worker,
@@ -646,38 +501,6 @@ internal class LiveAssistantMetadataOnlyProbe(@Suppress("UNUSED_PARAMETER") cont
                     "captureFenced" to count(capture, "fenced"), "outputDemands" to output.size,
                     "outputGranted" to count(output, "granted"), "outputFenced" to count(output, "fenced"),
                 )
-            }
-        }
-        emit(stage, "REAL_AUDIO_ASSISTANT_AEC_METADATA") {
-            val retained = processor
-            if (retained == null) listOf("processorPresent" to 0, "snapshotAvailable" to 0)
-            else {
-                // One immutable native-history publication plus a separate immutable first
-                // fault. Never acquire processLock, inspect PCM, request stats or invoke JNI.
-                val history = value(retained, "nativeHistoryDiagnostics")
-                val fault = (value(retained, "firstFault") as AtomicReference<*>).get()
-                buildList {
-                    add("processorPresent" to 1)
-                    add("processorIdentity" to System.identityHashCode(retained))
-                    add("snapshotAvailable" to if (history != null) 1 else 0)
-                    add("currentFailureCode" to (value(retained, "failureCode") as AtomicInteger).get())
-                    add("firstFaultAvailable" to if (fault != null) 1 else 0)
-                    history?.let { publication ->
-                        listOf("observedNanos", "captureFrames", "reverseFrames", "suspendedReverseFrames",
-                            "suspendedHistoryFaults", "statsPresentMask", "suspendedHistoryEventMask",
-                            "suspendedTransitionLatencyBlocks", "suspendedAdvancedBlocks", "suspendedRecoveryLatencyBlocks",
-                            "nativeStatus", "failureCode", "normalInsertOverruns", "normalPrepareExcessResets",
-                            "normalPrepareUnderruns", "currentRenderLatencyBlocks", "subtractorFullResets").forEach { name ->
-                            add(name to (value(publication, name) as Number))
-                        }
-                    }
-                    fault?.let { publication ->
-                        listOf("code", "nativeStatus", "captureFrames", "captureUncertaintyNs", "referenceUncertaintyNs",
-                            "hasReference", "captureHardware", "renderHardware", "referenceCount", "consumerFilled").forEach { name ->
-                            add("fault_$name" to (value(publication, name) as Number))
-                        }
-                    }
-                }
             }
         }
         printNativeAcquisitionDiagnostics(listOf(acquisition))

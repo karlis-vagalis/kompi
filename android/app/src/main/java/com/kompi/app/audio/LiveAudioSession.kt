@@ -79,7 +79,6 @@ class LiveAudioSession private constructor(
     private var readyCueClaimed = false
     private val renderAdmissions = java.util.ArrayDeque<RenderReservation>()
     private var readyCueReservation: RenderReservation? = null
-    private var echoProcessor: DuplexEchoProcessor? = null
     var echoPolicy: EchoCancellationPolicy = EchoCancellationPolicy.Required
         private set
     var preferredInputDevice: AudioDeviceInfo? = null
@@ -464,9 +463,6 @@ class LiveAudioSession private constructor(
         } catch (_: java.util.concurrent.RejectedExecutionException) { /* Terminal owner. */ }
     }
 
-    internal fun protectCapture(consumer: Pcm16kConsumer, originActive: () -> Boolean): DuplexEchoProcessor.CaptureLease? =
-        synchronized(lock) { requireActive(); echoProcessor?.capture(consumer, originActive) }
-
     /** Exclusive renderer capability, reserved BEFORE async cue decode or TTS construction. */
     internal inner class RenderReservation {
         val ready = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -484,26 +480,16 @@ class LiveAudioSession private constructor(
 
     private fun enqueueRenderLocked(): RenderReservation = RenderReservation().also { renderAdmissions.addLast(it) }
 
-    internal fun renderReference(track: AudioTrack, rate: Int, reservation: RenderReservation): DuplexEchoProcessor.RenderLease = try {
-        val delegate = whileActive {
-            check(renderAdmissions.peekFirst() === reservation && reservation.ready.isCompleted && !reservation.ready.isCancelled)
-            echoProcessor?.render(track, rate)
-        }
-        object : DuplexEchoProcessor.RenderLease {
-            private val released = java.util.concurrent.atomic.AtomicBoolean(false)
-            override fun beginWrite(): Closeable = delegate?.beginWrite() ?: Closeable {}
-            override fun analyze(samples: FloatArray, offset: Int, count: Int) { delegate?.analyze(samples, offset, count) }
-            override fun accepted(samples: FloatArray, offset: Int, count: Int) { delegate?.accepted(samples, offset, count) }
-            override fun freeze() { delegate?.freeze() }
-            override fun finishWrites() { delegate?.finishWrites() }
-            override fun rejectPcm() { delegate?.rejectPcm() }
-            override fun close() {
-                if (released.compareAndSet(false, true)) try { delegate?.close() } finally { reservation.release() }
-            }
-        }
-    } catch (_: Exception) {
-        revoke(LiveLocalStopReason.EngineFailure(LiveAudioStartIssue.EchoUnavailable.guidance))
-        throw LiveAudioStartException(LiveAudioStartIssue.EchoUnavailable)
+    internal class RenderLease(val rate: Int, private val reservation: RenderReservation) : Closeable {
+        @Volatile var accepted: Long = 0
+            private set
+        fun written(count: Int) { accepted += count }
+        override fun close() = reservation.release()
+    }
+
+    internal fun renderReference(track: AudioTrack, rate: Int, reservation: RenderReservation): RenderLease = whileActive {
+        check(track.sampleRate == rate && renderAdmissions.peekFirst() === reservation && reservation.ready.isCompleted && !reservation.ready.isCancelled)
+        RenderLease(rate, reservation)
     }
 
     internal suspend fun awaitSpeechRenderProducer(): RenderReservation {
@@ -606,7 +592,6 @@ class LiveAudioSession private constructor(
         actions.forEach { runCatching { it(LiveLocalStopReason.Backgrounded) } }
         synchronized(modeAcknowledgement) { modeAcknowledgement.notifyAll() }
         releaseOsOwnership()
-        echoProcessor?.close() // Nonjoining; native lifetime remains protected by the DSP worker.
         synchronized(registryLock) { if (active === this) active = null }
         control.shutdown()
     }
@@ -677,24 +662,9 @@ class LiveAudioSession private constructor(
             isolatedOutput = isolated
             idleDeviceId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) manager.communicationDevice?.id ?: -1 else -1
         }
-        // Native APM initialization is outside EVERY privacy/OS-ownership lock. Focus loss can
-        // revoke an opening owner immediately; no capture/playback has been published yet.
-        val software = try {
-            LiveSoftwareEchoFactory.create { originStillActive, recordFault ->
-                revoke(LiveLocalStopReason.EngineFailure(LiveAudioStartIssue.EchoUnavailable.guidance),
-                    originStillActive = {
-                        if (originStillActive()) { recordFault(); true } else false
-                    })
-            }
-        } catch (error: LiveAudioStartException) {
-            if (!isolatedOutput) throw error
-            null // A genuinely isolated headset may operate without acoustic echo processing.
-        }
         synchronized(lock) {
-            if (state != State.Opening) { software?.close(); error("Live audio was revoked during echo startup") }
-            echoProcessor = software
-            // Do not cascade a vendor AEC whose enable bit does not prove reverse-path processing.
-            echoPolicy = if (software != null) EchoCancellationPolicy.SoftwareOwned else EchoCancellationPolicy.Optional
+            check(state == State.Opening) { "Live audio was revoked during setup" }
+            echoPolicy = if (isolatedOutput) EchoCancellationPolicy.Optional else EchoCancellationPolicy.Required
             state = State.Running
         }
         onControl { check(routeMatches(RouteCheckTrigger.Explicit)) { "The idle audio route changed during preparation" } }

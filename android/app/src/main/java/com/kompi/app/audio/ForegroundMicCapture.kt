@@ -205,8 +205,8 @@ class ForegroundMicCapture(
             val builder = AudioRecord.Builder().setAudioSource(sourceSelection.requestedSource)
                 .setAudioFormat(AudioFormat.Builder().setSampleRate(SAMPLE_RATE).setChannelMask(CHANNEL).setEncoding(ENCODING).build())
                 .setBufferSizeInBytes(max(minBytes * 2, FRAME_SAMPLES * 2 * 4))
-            // Keep software-owned communication capture explicitly privacy-sensitive.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && activeConsumer is SoftwareEchoCaptureConsumer)
+            // Keep communication capture explicitly privacy-sensitive.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && sourceSelection.requestedSource == MediaRecorder.AudioSource.VOICE_COMMUNICATION)
                 builder.setPrivacySensitive(true)
             requireHardwarePermit()
             val record = builder.build()
