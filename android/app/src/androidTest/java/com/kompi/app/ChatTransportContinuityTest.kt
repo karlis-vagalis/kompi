@@ -54,6 +54,14 @@ class ChatTransportContinuityTest {
         compose.runOnUiThread { transport = IrohTransport(context, secure, repository).also { it.reconnect(pairing) } }
         compose.waitUntil(30_000) { transport!!.state.value == "Live" }
     }
+    /** Compose 1.12 fetches nodes on the UI thread but assertIsDisplayed then queries window
+     * and layout bounds on its caller. Those reads can re-enter placement while IME insets
+     * animate. Synchronize first, then do the entire geometry assertion on the owner looper. */
+    @OptIn(ExperimentalTestApi::class)
+    private fun SemanticsNodeInteraction.assertDisplayedOnOwnerThread() {
+        compose.runOnIdle { compose.runWithoutImplicitWait { assertIsDisplayed() } }
+    }
+
     private fun capture(name: String) {
         compose.waitForIdle()
         val image = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
@@ -209,12 +217,12 @@ class ChatTransportContinuityTest {
         val visibleMs = SystemClock.elapsedRealtime() - sentAt
         fun assertBubble() {
             compose.onAllNodesWithText("A message that stays here").assertCountEquals(1)
-            compose.onNodeWithText("A message that stays here").assertIsDisplayed()
+            compose.onNodeWithText("A message that stays here").assertDisplayedOnOwnerThread()
             compose.runOnIdle { assertEquals(listOf("user:wire-request"), rendered.filter { it.fromUser }.map { it.key }) }
         }
         capture("first-bubble")
         assertBubble()
-        compose.onNode(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Sending")).assertIsDisplayed()
+        compose.onNode(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Sending")).assertDisplayedOnOwnerThread()
         capture("sending-light")
         compose.runOnIdle { dark = true }
         capture("sending-dark")
@@ -226,7 +234,7 @@ class ChatTransportContinuityTest {
             // reconcile the real Room outbox against the remote summary before retransmission.
             runBlocking { transport!!.closeAndJoin() }
             assertBubble()
-            compose.onNode(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Delivery not confirmed")).assertIsDisplayed()
+            compose.onNode(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Delivery not confirmed")).assertDisplayedOnOwnerThread()
             capture("disconnected-dark")
             openTransport()
         } else {
@@ -243,7 +251,7 @@ class ChatTransportContinuityTest {
         compose.waitUntil(30_000) { rendered.any { it.deliveryStatus == com.kompi.app.chat.OutgoingMessageStatus.Sent } }
         assertBubble()
         compose.onNodeWithText("> thinking").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Waiting for reply").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Waiting for reply").assertDisplayedOnOwnerThread()
         capture("received-dark")
         runBlocking { transport!!.closeAndJoin() }
         assertBubble()
