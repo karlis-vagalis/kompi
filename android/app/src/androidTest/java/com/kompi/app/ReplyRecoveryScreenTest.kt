@@ -42,6 +42,37 @@ class ReplyRecoveryScreenTest {
         compose.runOnIdle { assertEquals(listOf("First draft"), sent); assertEquals(1, reads) }
     }
 
+    @Test fun completedButQuestionOnlySnapshotOffersReadOnlyCheck() {
+        val target = ConversationTarget.saved("host-a", "00000000-0000-4000-8000-000000000001")
+        var view by mutableStateOf(PiSessionStore.View(conversationId = target.id, loading = false,
+            lines = listOf(PiSessionStore.Line("user:finished", "Is the kiln ready?", true))))
+        val views = kotlinx.coroutines.flow.MutableStateFlow(view)
+        var reads = 0
+        var completions by mutableStateOf(setOf("finished"))
+        compose.setContent {
+            val pane = rememberChatHistory(target, view, views, "closed", "Live", true, true, completions,
+                { error("Unexpected live read") }, { reads++; view })
+            ChatBehaviorSurface(history = pane, transcript = listOf(TranscriptLine("Is the kiln ready?", true, "question")),
+                onSend = { _, _ -> error("Read-only recovery must not send") })
+        }
+        compose.onNodeWithText("Is the kiln ready?").assertIsDisplayed()
+        compose.onNodeWithText("Couldn’t load the reply.").assertIsDisplayed()
+        compose.onNodeWithText("Check for reply").performClick()
+        compose.runOnIdle {
+            assertEquals(2, reads)
+            // A newer failed turn without text is not a missing reply for an older completion.
+            view = view.copy(lines = view.lines + PiSessionStore.Line("user:failed", "Later question", true))
+            completions = setOf("finished", "older")
+        }
+        compose.waitUntil { reads == 3 }
+        compose.onNodeWithText("Couldn’t load the reply.").assertDoesNotExist()
+        // Old archive text must not erase a different completed prompt absent from that read.
+        val repeated = buildTranscriptProjection(view.copy(lines = listOf(PiSessionStore.Line("old-entry", "Continue", true))),
+            listOf("missing" to "Continue"), emptyList(), emptyList())
+        assertEquals(listOf("old-entry", "user:missing"), repeated.active.map { it.key })
+        compose.onNodeWithContentDescription("Waiting for reply").assertDoesNotExist()
+    }
+
     @Test fun disconnectedCompletionReopensWithReadableReplyAndBoundedRetry() {
         val target = ConversationTarget.saved("host-a", "00000000-0000-4000-8000-000000000001")
         val store = PiSessionStore(needSnapshot = {}, publicDelta = { _, _, _, _, _ -> }, settled = { _, _, _, _ -> })

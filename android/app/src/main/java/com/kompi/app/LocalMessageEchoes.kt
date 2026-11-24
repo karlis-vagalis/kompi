@@ -16,7 +16,7 @@ internal class LocalMessageEchoes {
         val states = requests.associateBy { it.requestId }
         messages.entries.removeAll { (id, _) ->
             val state = states[id]
-            state?.outcome == "cancelled" && state.conversationId.isBlank() ||
+            state?.outcome == "discarded" || state?.outcome == "cancelled" && state.conversationId.isBlank() ||
                 state?.conversationId?.let { it.isNotBlank() && conversation != null && it != conversation } == true
         }
         return messages.map { it.key to it.value }

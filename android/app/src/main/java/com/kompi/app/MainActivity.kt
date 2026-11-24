@@ -157,7 +157,6 @@ import com.kompi.app.chat.ChatActionTone
 import com.kompi.app.chat.ChatMessage
 import com.kompi.app.chat.OutgoingMessageStatus
 import com.kompi.app.chat.ReplyPendingRow
-import com.kompi.app.chat.ReplyPendingPhase
 import com.kompi.app.chat.KompiSection
 import com.kompi.app.chat.KompiSectionDivider
 import com.kompi.app.chat.ChatLucideIcon
@@ -512,7 +511,7 @@ private fun KompiApp(
         localUiState.local.outbox.filter { requestTargets[it.requestId] == displayedId }
     val displayedRequests = if (focusedChat == null) localUiState.local.requests else
         localUiState.local.requests.filter { it.conversationId == displayedId }
-    val unsentPrompts = scopedOutbox.filter { it.hostId == selectedMachineKey && it.state != "accepted" }.map { row ->
+    val unsentPrompts = scopedOutbox.filter { it.hostId == selectedMachineKey && it.state !in setOf("accepted", "dispatching") }.map { row ->
         SecureStore.PendingPrompt(
             row.requestId,
             row.text,
@@ -547,6 +546,7 @@ private fun KompiApp(
         scopedOutbox.filter { it.hostId == selectedMachineKey }.map { it.requestId to it.text }
     }
     val heldPromptIds = unsentPrompts.filter { it.waitingForConversation }.mapTo(mutableSetOf()) { it.id }
+    val observedWrites by transport.observedWrites.collectAsState()
     val attachmentDispatchStages by transport.attachmentDispatchStages.collectAsState()
     val pendingFileIds = remember(localUiState.local.outbox, selectedMachineKey) {
         localUiState.local.outbox.filter { it.hostId == selectedMachineKey }.associate { row ->
@@ -558,11 +558,10 @@ private fun KompiApp(
         value = pendingFileIds.mapValues { (_, ids) -> ids.mapNotNull { cached[it]?.let(MessageAttachment::Local) } }
     }
     val localEchoes = remember(selectedMachineKey, focusedChat?.id) { LocalMessageEchoes() }
-    val transcriptProjection = remember(piSession, historyPane.coveredCompletions, pendingPiPrompts, displayedRequests, deliveryNotices, pendingAttachments, pendingFileIds, attachmentDispatchStages, heldPromptIds) {
+    val transcriptProjection = remember(piSession, historyPane.coveredCompletions, pendingPiPrompts, displayedRequests, deliveryNotices, pendingAttachments, pendingFileIds, attachmentDispatchStages, heldPromptIds, scopedOutbox, observedWrites) {
         val echoes = localEchoes.reconcile(piSession.conversationId, pendingPiPrompts, displayedRequests)
-            .filterNot { it.first in historyPane.coveredCompletions }
         buildTranscriptProjection(piSession, echoes.filterNot { it.first in heldPromptIds }, displayedRequests.filterNot { it.requestId in heldPromptIds }, deliveryNotices,
-            pendingAttachments, pendingFileIds.mapValues { it.value.size }, attachmentDispatchStages)
+            pendingAttachments, attachmentDispatchStages, scopedOutbox.associate { it.requestId to it.state }, observedWrites.keys)
     }
     val transcript = transcriptProjection.all
     val activeTranscript = transcriptProjection.active
@@ -819,6 +818,8 @@ private fun KompiApp(
                 val failureConversationId = event.conversationId ?: responseConversationIds[event.id] ?: latestRequestTargets[event.id]?.takeIf { it.isNotEmpty() }
                 val failureText = when {
                     event.code == "response-too-large" -> "Reply too large to display."
+                    event.code == "attachment-permanent" -> event.message
+                    event.uncertain && event.retryable -> "Delivery not confirmed."
                     event.retryable -> "Waiting for the computer. Retrying automatically."
                     event.uncertain -> "Reply interrupted."
                     else -> "Couldn't complete this request."
@@ -1243,6 +1244,9 @@ private fun KompiApp(
                 historyLoadError = historyPane.error,
                 onRetryHistory = historyPane.retry,
                 loadingHistory = historyPane.loading,
+                recoveringHistory = historyPane.fetching,
+                checkingReply = historyPane.checkingReply,
+                canCheckHistory = historyPane.canCheck,
                 onNewChat = {
                     if (focusedChat != null) focusChat(ConversationTarget.new(selectedMachineKey))
                     else {
@@ -1581,10 +1585,10 @@ private fun sessionTime(timestamp: String?): String? = timestamp?.let { value ->
 private val titleWhitespace = Regex("\\s+")
 private fun draftTitle(text: String?): String? = text?.trim()?.replace(titleWhitespace, " ")?.take(120)?.takeIf { it.isNotBlank() }
 
-internal data class TranscriptLine(val text: String, val fromUser: Boolean, val key: String, val sessionId: String? = null, val conversationId: String? = null, val isActivity: Boolean = false, val isDivider: Boolean = false, val pendingPhase: ReplyPendingPhase? = null, val animateArrivals: Boolean = false, val piDetails: com.kompi.app.transport.PiSessionStore.Details? = null,
+internal data class TranscriptLine(val text: String, val fromUser: Boolean, val key: String, val sessionId: String? = null, val conversationId: String? = null, val isActivity: Boolean = false, val isDivider: Boolean = false, val waitingForReply: Boolean = false, val animateArrivals: Boolean = false, val piDetails: com.kompi.app.transport.PiSessionStore.Details? = null,
     val body: String = text, val attachments: List<MessageAttachment> = emptyList(),
-    val pendingAttachmentCount: Int = 0, val attachmentDispatch: AttachmentDispatchStage? = null,
-    val deliveryStatus: OutgoingMessageStatus? = null, val artifact: OfferedArtifact? = null)
+    val attachmentDispatch: AttachmentDispatchStage? = null,
+    val replyDetail: String? = null, val deliveryStatus: OutgoingMessageStatus? = null, val artifact: OfferedArtifact? = null)
 
 internal data class TranscriptProjection(val all: List<TranscriptLine>, val active: List<TranscriptLine>) {
     companion object { val Empty = TranscriptProjection(emptyList(), emptyList()) }
@@ -1596,43 +1600,67 @@ internal fun buildTranscriptProjection(
     requests: List<com.kompi.app.data.RequestStateRow>,
     notices: List<com.kompi.app.data.ConversationViewModel.Notice>,
     pendingAttachments: Map<String, List<MessageAttachment>> = emptyMap(),
-    pendingAttachmentCounts: Map<String, Int> = emptyMap(),
     attachmentDispatchStages: Map<String, AttachmentDispatchStage> = emptyMap(),
+    outboxStates: Map<String, String> = emptyMap(),
+    observedWrites: Set<String> = emptySet(),
 ): TranscriptProjection {
-    val lines = pi.lines.map { line -> TranscriptLine(line.text, line.fromUser, line.key, pi.sessionId, pi.conversationId,
-        isActivity = line.activity, animateArrivals = line.streaming, piDetails = line.details,
-        body = line.body, attachments = line.attachments, artifact = line.artifact) }.toMutableList()
     val states = requests.associateBy { it.requestId }
-    fun belongsHere(conversationId: String?) = conversationId.isNullOrBlank() || conversationId == pi.conversationId
+    fun replyDetail(id: String) = when (states[id]?.outcome) {
+        "running" -> "Working on reply"
+        "completed" -> "Completed"
+        "failed" -> "Reply failed"
+        "host-cancelled" -> "Reply stopped"
+        "uncertain" -> "Reply outcome unknown"
+        "accepted" -> "Waiting for reply"
+        else -> null
+    }
+    val lines = pi.lines.filterNot { it.activityKind == com.kompi.app.transport.PiSessionStore.Activity.Thinking }.map { line -> TranscriptLine(line.text, line.fromUser, line.key, pi.sessionId, pi.conversationId,
+        isActivity = line.activity, animateArrivals = line.streaming, piDetails = line.details,
+        replyDetail = replyDetail(line.key.removePrefix("user:")), body = line.body, attachments = line.attachments, artifact = line.artifact,
+        deliveryStatus = OutgoingMessageStatus.Sent.takeIf { line.fromUser && line.key.startsWith("user:") && line.key.removePrefix("user:") in pi.representedRequests }) }.toMutableList()
+    val pendingIds = pending.mapTo(mutableSetOf()) { it.first }
+    fun belongsHere(conversationId: String?, id: String? = null) = conversationId.isNullOrBlank() || conversationId == pi.conversationId ||
+        (pi.conversationId == null && id in pendingIds)
+    val renderedKeys = lines.mapTo(mutableSetOf()) { it.key }
     for ((id, body) in pending) {
-        if (id in pi.representedRequests) continue
+        if ("user:$id" in renderedKeys) continue
         val state = states[id]
-        if (!belongsHere(state?.conversationId)) continue
-        if (state?.outcome == "cancelled" && state.conversationId.isBlank()) continue
-        val status = when (state?.outcome) {
-            "accepted", "completed" -> OutgoingMessageStatus.Sent
-            "running" -> OutgoingMessageStatus.Running
-            "failed", "rejected" -> OutgoingMessageStatus.Failed
-            "cancelled" -> OutgoingMessageStatus.Cancelled
-            "uncertain" -> OutgoingMessageStatus.Uncertain
-            else -> if (state?.conversationId?.isNotBlank() == true) OutgoingMessageStatus.Queued else OutgoingMessageStatus.Sending
+        if (!belongsHere(state?.conversationId, id)) continue
+        if (state?.outcome in setOf("cancelled", "discarded")) continue
+        val status = when {
+            state?.outcome == "local-failure" -> OutgoingMessageStatus.LocalFailure
+            state?.outcome == "rejected" -> OutgoingMessageStatus.Failed
+            state?.outcome in setOf("accepted", "running", "completed", "uncertain", "failed", "host-cancelled") ||
+                outboxStates[id] == "accepted" -> OutgoingMessageStatus.Sent
+            outboxStates[id] == "dispatching" -> if (id in observedWrites) OutgoingMessageStatus.Dispatching else OutgoingMessageStatus.Uncertain
+            id in attachmentDispatchStages -> OutgoingMessageStatus.Uploading
+            else -> OutgoingMessageStatus.Sending
         }
         val attachments = pendingAttachments[id].orEmpty()
         lines.add(TranscriptLine(body, true, "user:$id", conversationId = pi.conversationId,
-            body = body.ifBlank { if (attachments.isEmpty()) "[Attached files]" else "" }, attachments = attachments, deliveryStatus = status))
+            body = body.ifBlank { if (attachments.isEmpty()) "[Attached files]" else "" }, attachments = attachments, attachmentDispatch = attachmentDispatchStages[id], replyDetail = replyDetail(id), deliveryStatus = status))
     }
-    val pendingIds = pending.map { it.first }.toSet()
     // Local queue feedback requires an outbox entry; daemon-owned queued work has a conversation.
-    val activeRequests = requests.filter { belongsHere(it.conversationId) && (it.outcome != "queued" || it.conversationId.isNotBlank() || it.requestId in pendingIds) }
-    val outstanding = activeRequests.firstOrNull { it.requestId in attachmentDispatchStages && it.outcome == "queued" }
-        ?: activeRequests.lastOrNull { it.outcome in setOf("queued", "accepted", "running") }
-    if (outstanding != null && pi.lines.none { it.streaming } &&
-        !(outstanding.outcome == "queued" && outstanding.requestId in pendingIds &&
-            outstanding.requestId !in attachmentDispatchStages && (pendingAttachmentCounts[outstanding.requestId] ?: 0) == 0)) {
-        val phase = when (outstanding.outcome) { "queued" -> ReplyPendingPhase.Queued; "running" -> ReplyPendingPhase.Running; else -> ReplyPendingPhase.Accepted }
-        lines.add(TranscriptLine("", false, "${outstanding.requestId}:pending", conversationId = pi.conversationId, pendingPhase = phase,
-            pendingAttachmentCount = pendingAttachmentCounts[outstanding.requestId] ?: 0,
-            attachmentDispatch = attachmentDispatchStages[outstanding.requestId]))
+    val activeRequests = requests.filter { belongsHere(it.conversationId, it.requestId) && (it.outcome != "queued" || it.conversationId.isNotBlank() || it.requestId in pendingIds) }
+    val outstanding = activeRequests.lastOrNull { it.outcome in setOf("accepted", "running") || (it.outcome == "queued" && outboxStates[it.requestId] == "accepted") }
+    if (outstanding != null) {
+        val userIndex = lines.indexOfLast { it.key == "user:${outstanding.requestId}" }
+        val hasAnswer = outstanding.requestId in pi.readableReplies ||
+            userIndex >= 0 && lines.drop(userIndex + 1).takeWhile { !it.fromUser }.any { !it.isActivity && it.text.isNotBlank() }
+        if (!hasAnswer) lines.add(TranscriptLine("", false, "${outstanding.requestId}:pending", conversationId = pi.conversationId, waitingForReply = true))
+    }
+    activeRequests.forEach { request ->
+        val label = when (request.outcome) {
+            "failed" -> "Reply failed"
+            "host-cancelled" -> "Reply stopped"
+            "uncertain" -> "Reply outcome unknown"
+            else -> null
+        }
+        val user = lines.indexOfFirst { it.key == "user:${request.requestId}" }
+        if (label != null && user >= 0 && notices.none { it.key == "${request.requestId}:error" }) {
+            val next = (user + 1 until lines.size).firstOrNull { lines[it].fromUser } ?: lines.size
+            lines.add(next, TranscriptLine(label, false, "${request.requestId}:outcome", conversationId = pi.conversationId, isActivity = true))
+        }
     }
     notices.filter { belongsHere(it.conversationId) }.forEach {
         lines.add(TranscriptLine(it.text, false, it.key, conversationId = it.conversationId, isActivity = true))
@@ -1688,6 +1716,9 @@ internal fun ConversationScreen(
     sessionMessage: String,
     historyLoadError: Boolean = false,
     loadingHistory: Boolean = false,
+    recoveringHistory: Boolean = false,
+    checkingReply: Boolean = false,
+    canCheckHistory: Boolean = false,
     onRetryHistory: () -> Unit = {},
     onPair: () -> Unit,
     onOpenVoiceSettings: () -> Unit,
@@ -2183,8 +2214,8 @@ internal fun ConversationScreen(
         ) {
             if (sessionMessage.isNotBlank()) Text(sessionMessage, style = KompiUi.typography.bodySmall, color = KompiUi.colors.error)
             if (historyLoadError) {
-                Text("Couldn’t load this conversation.", style = KompiUi.typography.bodySmall, color = KompiUi.colors.error)
-                TextButton(onClick = onRetryHistory) { Text("Retry") }
+                Text(if (checkingReply) "Couldn’t load the reply." else "Couldn’t load this conversation.", style = KompiUi.typography.bodySmall, color = KompiUi.colors.error)
+                TextButton(onClick = onRetryHistory) { Text(if (checkingReply) "Check for reply" else "Retry") }
             } else if (loadingHistory) Text("Loading conversation…", style = KompiUi.typography.bodySmall)
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -2228,9 +2259,8 @@ internal fun ConversationScreen(
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             HorizontalDivider(Modifier.weight(1f)); Text(line.text, Modifier.padding(horizontal = 10.dp), style = KompiUi.typography.labelSmall, color = KompiUi.colors.onSurfaceVariant); HorizontalDivider(Modifier.weight(1f))
                         }
-                    } else if (line.pendingPhase != null) {
-                        ReplyPendingRow(line.pendingPhase, connected = connectionState == "Live",
-                            attachmentCount = line.pendingAttachmentCount, attachmentStage = line.attachmentDispatch)
+                    } else if (line.waitingForReply) {
+                        if (connectionState == "Live" && !historyLoadError && !recoveringHistory && !loadingHistory) ReplyPendingRow()
                     } else if (line.artifact != null) {
                         val target = artifactPeer?.let { peer -> line.conversationId?.let { ArtifactDownloadTarget(peer, it, line.artifact) } }
                         artifactPicker.Offer(line.artifact, target, connectionState == "Live", artifactDownloadsSupported)
@@ -2240,7 +2270,7 @@ internal fun ConversationScreen(
                             LaunchedEffect(line.key, line.deliveryStatus) {
                                 withFrameNanos { }
                                 val presentation = when (line.deliveryStatus) {
-                                    OutgoingMessageStatus.Sent, OutgoingMessageStatus.Queued, OutgoingMessageStatus.Running ->
+                                    OutgoingMessageStatus.Sent ->
                                         com.kompi.app.diagnostics.ChatTiming.UserPresentation.Acknowledged
                                     null -> com.kompi.app.diagnostics.ChatTiming.UserPresentation.Canonical
                                     else -> com.kompi.app.diagnostics.ChatTiming.UserPresentation.Optimistic
@@ -2265,7 +2295,7 @@ internal fun ConversationScreen(
                         ChatMessage(
                             text = line.text,
                             displayText = line.body,
-                            deliveryStatus = line.deliveryStatus,
+                            deliveryStatus = line.deliveryStatus, replyDetail = line.replyDetail, attachmentStage = line.attachmentDispatch,
                             connected = connectionState == "Live",
                             attachments = line.attachments,
                             fromUser = line.fromUser,
@@ -2282,9 +2312,10 @@ internal fun ConversationScreen(
                             onStopReadAloud = onStopReadAloud,
                             onOpenVoiceSettings = onOpenVoiceSettings,
                         )
+                        if (line.deliveryStatus == OutgoingMessageStatus.Uncertain || (line.deliveryStatus == OutgoingMessageStatus.Dispatching && connectionState != "Live"))
+                            TextButton(onClick = onRetryHistory, enabled = connectionState == "Live" && canCheckHistory) { Text("Check conversation") }
                         visibleUnsentPrompts.firstOrNull { line.key == "user:${it.id}" }?.let { prompt ->
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                if (!prompt.waitingForConversation) TextButton(onClick = { updateComposer(composer.edit(prompt.text)) }, enabled = submittingRevisions.isEmpty()) { Text("Review draft") }
                                 TextButton(onClick = { sendScope.launch { onDiscardPrompt(prompt.id) } }, enabled = submittingRevisions.isEmpty()) { Text("Discard") }
                             }
                         }
@@ -2306,9 +2337,6 @@ internal fun ConversationScreen(
                     PendingPromptNotice(
                         prompt = prompt,
                         enabled = submittingRevisions.isEmpty(),
-                        onReview = {
-                            updateComposer(composer.edit(prompt.text))
-                        },
                         onDiscard = { sendScope.launch { onDiscardPrompt(prompt.id) } },
                     )
                 }
@@ -2507,16 +2535,17 @@ internal fun ConversationScreen(
 private fun PendingPromptNotice(
     prompt: PendingPrompt,
     enabled: Boolean,
-    onReview: () -> Unit,
     onDiscard: () -> Unit,
 ) {
     Surface(color = KompiUi.colors.surfaceContainerLow, shape = KompiUi.shapes.medium, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(if (prompt.waitingForConversation) "Not sent. Open the original session to review this message." else "Not sent yet · saved on this phone",
+            if (prompt.waitingForConversation) Text("Open the original session to review this message.",
                 style = KompiUi.typography.labelMedium, color = KompiUi.colors.onSurfaceVariant)
-            Text(prompt.text, style = KompiUi.typography.bodySmall, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            Row(Modifier.semantics(mergeDescendants = true) { stateDescription = "Saved on this phone" }, verticalAlignment = Alignment.CenterVertically) {
+                Text(prompt.text, Modifier.weight(1f), style = KompiUi.typography.bodySmall, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                Spacer(Modifier.width(8.dp)); ChatLucideIcon(OutgoingMessageStatus.Sending.icon, null, Modifier.size(16.dp))
+            }
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                if (!prompt.waitingForConversation) TextButton(onClick = onReview, enabled = enabled) { Text("Review draft") }
                 TextButton(onClick = onDiscard, enabled = enabled) { Text("Discard") }
             }
         }

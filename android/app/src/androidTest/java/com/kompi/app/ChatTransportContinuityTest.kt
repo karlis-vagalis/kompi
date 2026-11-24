@@ -113,15 +113,15 @@ class ChatTransportContinuityTest {
                 local.requests.filter { it.outcome == "completed" }.map { it.requestId }.toSet(), net::requestConversationSnapshot,
                 { error("Unexpected archive read") }, timeoutMs = 2_000) }
             val echoes = remember(selected?.id) { LocalMessageEchoes() }.reconcile(pane.view.conversationId,
-                local.outbox.map { it.requestId to it.text }, local.requests).filterNot { it.first in pane.coveredCompletions }
-            val lines = buildTranscriptProjection(pane.view, echoes, local.requests, emptyList()).active
+                local.outbox.map { it.requestId to it.text }, local.requests)
+            val lines = buildTranscriptProjection(pane.view, echoes, local.requests, emptyList(), outboxStates = local.outbox.associate { it.requestId to it.state }, observedWrites = net.observedWrites.collectAsState().value.keys).active
             ChatBehaviorSurface(history = pane, connection = phase, transcript = lines,
                 onSend = { text, files -> net.sendPromptTo(checkNotNull(selected), text, files, id) })
         }
         compose.onNodeWithTag("prompt-input").performTextInput("Count the fixture cards")
         compose.onNodeWithContentDescription("Send message").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitUntil(30_000) { peer.prompts.size == 1 }
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("Waiting for response").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodes(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Accepted by your computer")).fetchSemanticsNodes().isNotEmpty() }
         val finalHistory = """{"entries":[{"type":"message","id":"user","message":{"role":"user","content":"Count the fixture cards"}},{"type":"message","id":"answer","parentId":"user","message":{"role":"assistant","content":"There are four fixture cards."}}],"leafId":"answer"}"""
         if (firstTurn) {
             runBlocking {
@@ -146,18 +146,18 @@ class ChatTransportContinuityTest {
             openTransport()
             compose.runOnIdle { opened = true }
             compose.onNodeWithText("Loading conversation…").assertIsDisplayed()
-            compose.onNodeWithText("Waiting for response").assertDoesNotExist()
+            compose.onNodeWithContentDescription("Waiting for reply").assertDoesNotExist()
             runBlocking {
                 // Correct chat but stale read ID: neither the spinner nor this pane's rows may
                 // be satisfied with a fragment that belongs to an earlier snapshot.
                 peer.send(WireMessage.PiFrame(PiFrame(target.id, "controlled-epoch", finalHistory.replace("four fixture cards", "obsolete cards"),
                     "snapshot", true, 0, "stale-read", 0, peer.snapshotSessionId)))
             }
-            compose.waitUntil(10_000) { compose.onAllNodesWithText("Couldn’t load this conversation.").fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(10_000) { compose.onAllNodesWithText("Couldn’t load the reply.").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText("There are obsolete cards.").assertDoesNotExist()
             compose.onNodeWithText("Loading conversation…").assertDoesNotExist()
             peer.targetedSnapshot = finalHistory
-            compose.onNodeWithText("Retry").performClick()
+            compose.onNodeWithText("Check for reply").performClick()
         }
         compose.waitUntil(10_000) { compose.onAllNodesWithText("There are four fixture cards.").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("There are four fixture cards.").assertIsDisplayed()
@@ -181,7 +181,7 @@ class ChatTransportContinuityTest {
             val phase by network.state.collectAsState()
             val echoes = remember { LocalMessageEchoes() }
             val pending = local.outbox.map { it.requestId to it.text }
-            val projection = buildTranscriptProjection(pi, echoes.reconcile(pi.conversationId, pending, local.requests), local.requests, emptyList())
+            val projection = buildTranscriptProjection(pi, echoes.reconcile(pi.conversationId, pending, local.requests), local.requests, emptyList(), outboxStates = local.outbox.associate { it.requestId to it.state }, observedWrites = network.observedWrites.collectAsState().value.keys)
             SideEffect {
                 rendered = projection.active
                 val keys = rendered.filter { it.fromUser }.map { it.key }
@@ -214,7 +214,7 @@ class ChatTransportContinuityTest {
         }
         capture("first-bubble")
         assertBubble()
-        compose.onNodeWithText("Sending…").assertIsDisplayed()
+        compose.onNode(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Sending")).assertIsDisplayed()
         capture("sending-light")
         compose.runOnIdle { dark = true }
         capture("sending-dark")
@@ -226,13 +226,15 @@ class ChatTransportContinuityTest {
             // reconcile the real Room outbox against the remote summary before retransmission.
             runBlocking { transport!!.closeAndJoin() }
             assertBubble()
-            compose.onNodeWithText("Waiting for connection").assertIsDisplayed()
+            compose.onNode(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Delivery not confirmed")).assertIsDisplayed()
             capture("disconnected-dark")
             openTransport()
         } else {
             runBlocking {
-                peer.send(WireMessage.Ack(peer.configuration, peer.conversationId, state = "accepted"), id = "wire-request")
+                peer.send(WireMessage.Ack(peer.configuration, peer.conversationId, state = "queued"), id = "wire-request")
             }
+            // A matching host queue acknowledgement is sufficient without any ledger update.
+            compose.waitUntil(10_000) { rendered.any { it.deliveryStatus == com.kompi.app.chat.OutgoingMessageStatus.Sent } }
             peer.cursor = "1"
             runBlocking { peer.send(WireMessage.SyncEvents(listOf(SyncEvent("1", DurableEvent.RequestChanged(
                 RequestChangedPayload(RequestSummary(peer.configuration, peer.conversationId, 0, "accepted", "wire-request"))
@@ -241,7 +243,7 @@ class ChatTransportContinuityTest {
         compose.waitUntil(30_000) { rendered.any { it.deliveryStatus == com.kompi.app.chat.OutgoingMessageStatus.Sent } }
         assertBubble()
         compose.onNodeWithText("> thinking").assertDoesNotExist()
-        compose.onNodeWithText("Waiting for response").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Waiting for reply").assertIsDisplayed()
         capture("received-dark")
         runBlocking { transport!!.closeAndJoin() }
         assertBubble()

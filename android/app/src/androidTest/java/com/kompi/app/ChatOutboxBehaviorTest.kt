@@ -69,7 +69,7 @@ class ChatOutboxBehaviorTest {
         val request = repository.requestState("host-a", "a")!!
         assertEquals("rejected", request.outcome)
         assertTrue(buildTranscriptProjection(com.kompi.app.transport.PiSessionStore.View(conversationId = chat),
-            emptyList(), listOf(request), emptyList()).active.none { it.pendingPhase != null })
+            emptyList(), listOf(request), emptyList()).active.none { it.waitingForReply })
     }
 
     @Test fun retryAndConversationHoldAreNotTerminalRejections() = runBlocking {
@@ -120,7 +120,7 @@ class ChatOutboxBehaviorTest {
         assertFalse(repository.discardUnacceptedPrompt("host-a", "b"))
         reopen()
         assertEquals(listOf("a", "c"), repository.pendingPrompts("host-a").map { it.requestId })
-        assertEquals("cancelled", repository.requestState("host-a", "b")!!.outcome)
+        assertEquals("discarded", repository.requestState("host-a", "b")!!.outcome)
     }
 
     @Test fun x1_x2_acceptedRequestCannotBeDiscardedAsIfItNeverReachedDaemon() = runBlocking {

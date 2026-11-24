@@ -51,7 +51,7 @@ class PiSessionStore(
     }
     data class View(val sessionId: String? = null, val conversationId: String? = null, val leafId: String? = null,
         val lines: List<Line> = emptyList(), val loading: Boolean = true, val representedRequests: Set<String> = emptySet(),
-        val sessionName: String? = null, val snapshotRevision: Long = 0, val hostId: String? = null)
+        val sessionName: String? = null, val snapshotRevision: Long = 0, val hostId: String? = null, val readableReplies: Set<String> = emptySet())
     private data class Entry(val id: String, val parentId: String?, val raw: JSONObject, val details: Details)
     private data class Record(val frame: PiFrame, val value: JSONObject, val connection: String?, val origin: Origin)
     private data class UpdateWindow(val request: String, val conversation: String, val epoch: String,
@@ -194,6 +194,7 @@ class PiSessionStore(
     private val parts = mutableMapOf<String, Partial>()
     private val buffered = mutableListOf<Record>()
     private var bufferedChars = 0
+    private val answerRequests = mutableMapOf<String, String>()
     private val represented = mutableSetOf<String>()
     // Request identity, not text equality, owns the optimistic-to-canonical bubble handoff.
     private val userRequests = mutableMapOf<String, String>()
@@ -227,7 +228,7 @@ class PiSessionStore(
     @Synchronized fun clear() {
         flushTimingUpdates()
         entries.clear(); sessionName = null; rowCache.clear(); renderKeys.clear(); active = null; epoch = null; leaf = null
-        conversation = null; session = null; sequence = -1; represented.clear(); userRequests.clear()
+        conversation = null; session = null; sequence = -1; answerRequests.clear(); represented.clear(); userRequests.clear()
         pendingSource = null; retiredSources.clear(); settledRequests.clear()
         toolSpan = ToolSpan.None; toolSpanRequest = null
         parts.clear(); buffered.clear(); bufferedChars = 0; speechSequences.clear(); completedLive.clear(); canonicalResponses.clear(); canonicalSequence = -1L
@@ -359,6 +360,7 @@ class PiSessionStore(
                         active?.let { renderKeys[entry.id] = it.key }
                         active = null
                     }
+                    f.requestId?.let { answerRequests[entry.id] = it }
                     ResponsePerformance.bindEntry(entryKey(entry.id), f.requestId)
                 }
                 if (message?.optString("role") == "user") f.requestId?.let { id ->
@@ -482,6 +484,7 @@ class PiSessionStore(
                 val key = renderKeys[entry.id] ?: entryKey(entry.id)
                 ChatTiming.bindResponse(key, f.requestId, f.conversationId, record.connection, record.origin)
                 val publicText = contentText(message.opt("content"))
+                answerRequests[entry.id] = f.requestId
                 if (publicText.isNotBlank() && f.requestId !in settledRequests) {
                     canonicalResponses.getOrPut(f.requestId) { linkedMapOf() }[entry.id] = publicText
                 }
@@ -628,15 +631,20 @@ class PiSessionStore(
             val entry = entries[next] ?: break
             chain.add(entry); next = entry.parentId
         }
-        val lines = chain.asReversed().flatMap(::rows).toMutableList()
+        val readableReplies = mutableSetOf<String>()
+        val lines = chain.asReversed().flatMap { entry -> rows(entry).also { rendered ->
+            if (rendered.any { !it.fromUser && !it.activity && it.text.isNotBlank() }) answerRequests[entry.id]?.let(readableReplies::add)
+        } }.toMutableList()
         active?.let { live ->
             val message = live.message()
             if (live.origin == LiveOrigin.ResumedSuffix) lines.add(Line(
                 "${live.key}:partial", "Partial response — earlier content is unavailable", false, activityKind = Activity.Other,
             ))
-            lines.addAll(assistantRows(live.key, message, Details(message), live.key, !live.complete,
-                if (live.complete) null else live::titles, live.origin == LiveOrigin.ResumedSuffix))
+            val rendered = assistantRows(live.key, message, Details(message), live.key, !live.complete,
+                if (live.complete) null else live::titles, live.origin == LiveOrigin.ResumedSuffix)
+            if (rendered.any { !it.activity && it.text.isNotBlank() }) live.requestId?.let(readableReplies::add)
+            lines.addAll(rendered)
         }
-        _view.value = View(session, conversation, leaf, compactToolCalls(lines), waiting, represented.toSet(), sessionName, snapshotRevision, hostId)
+        _view.value = View(session, conversation, leaf, compactToolCalls(lines), waiting, represented.toSet(), sessionName, snapshotRevision, hostId, readableReplies.toSet())
     }
 }

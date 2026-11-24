@@ -43,6 +43,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -51,6 +53,7 @@ import com.composeunstyled.TextInput
 import com.composeunstyled.UnstyledButton
 import com.composeunstyled.UnstyledTextField
 import com.composables.icons.lucide.R as LucideR
+import com.kompi.app.attachments.AttachmentDispatchStage
 import com.kompi.app.attachments.MessageAttachment
 import com.kompi.app.attachments.MessageAttachmentPreviews
 
@@ -189,17 +192,19 @@ fun ChatPromptField(
     }
 }
 
-enum class OutgoingMessageStatus {
-    Sending, Queued, Sent, Running, Failed, Cancelled, Uncertain;
+enum class OutgoingMessageStatus(val icon: Int) {
+    Sending(LucideR.drawable.lucide_ic_clock_3), Dispatching(LucideR.drawable.lucide_ic_clock_3),
+    Uploading(LucideR.drawable.lucide_ic_clock_3), Sent(LucideR.drawable.lucide_ic_check),
+    LocalFailure(LucideR.drawable.lucide_ic_circle_alert), Failed(LucideR.drawable.lucide_ic_circle_alert), Uncertain(LucideR.drawable.lucide_ic_circle_question_mark);
 
     fun label(connected: Boolean): String = when (this) {
-        Sending -> if (connected) "Sending…" else "Waiting for connection"
-        Queued -> "Queued on computer"
-        Sent -> "Received by computer"
-        Running -> "Running"
-        Failed -> "Not completed"
-        Cancelled -> "Cancelled"
-        Uncertain -> "Delivery unconfirmed"
+        Sending -> if (connected) "Sending" else "Waiting for connection"
+        Dispatching -> if (connected) "Sending" else "Delivery not confirmed"
+        Uploading -> "Uploading attachments"
+        Sent -> "Accepted by your computer"
+        LocalFailure -> "Couldn’t send message"
+        Failed -> "Message not accepted"
+        Uncertain -> "Delivery not confirmed"
     }
 }
 
@@ -221,10 +226,29 @@ fun ChatMessage(
     displayText: String = text,
     attachments: List<MessageAttachment> = emptyList(),
     deliveryStatus: OutgoingMessageStatus? = null,
+    replyDetail: String? = null,
+    attachmentStage: com.kompi.app.attachments.AttachmentDispatchStage? = null,
     connected: Boolean = true,
 ) {
     val colors = KompiUi.colors
     var actionsVisible by remember(messageKey) { mutableStateOf(false) }
+    var detailsOpen by remember(messageKey) { mutableStateOf(false) }
+    if (detailsOpen && deliveryStatus != null) com.kompi.app.ui.KompiAlertDialog(
+        onDismissRequest = { detailsOpen = false }, title = { Text("Message details") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Delivery: " + deliveryStatus.label(connected))
+            when (attachmentStage) {
+                is AttachmentDispatchStage.Uploading -> Text("Uploading file ${attachmentStage.index} of ${attachmentStage.count} · ${(100.0 * attachmentStage.received / attachmentStage.total.coerceAtLeast(1)).toInt()}%")
+                is AttachmentDispatchStage.Preparing -> Text("Preparing file ${attachmentStage.index} of ${attachmentStage.count}")
+                is AttachmentDispatchStage.Verifying -> Text("Verifying file ${attachmentStage.index} of ${attachmentStage.count}")
+                else -> Unit
+            }
+            if (replyDetail != null) Text("Reply: " + replyDetail)
+            Text("Connection: " + if (connected) "Connected" else "Offline")
+            if (deliveryStatus == OutgoingMessageStatus.Sent) Text("Kompi doesn’t show read receipts.")
+        } },
+        confirmButton = { com.kompi.app.ui.KompiTextButton(onClick = { detailsOpen = false }) { Text("Close") } },
+    )
     if (activity) {
         val rowModifier = modifier.fillMaxWidth().padding(start = 34.dp)
         if (piDetails != null) {
@@ -247,7 +271,10 @@ fun ChatMessage(
                     .then(if (deliveryStatus == OutgoingMessageStatus.Sending) Modifier.border(
                         1.dp, colors.outline, RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomEnd = 6.dp, bottomStart = 22.dp),
                     ) else Modifier)
-                    .semantics { if (deliveryStatus != null) stateDescription = deliveryStatus.label(connected) }
+                    .semantics(mergeDescendants = true) { if (deliveryStatus != null) {
+                        stateDescription = deliveryStatus.label(connected)
+                        customActions = listOf(CustomAccessibilityAction("Message details") { detailsOpen = true; true })
+                    } }
                     .clickable(
                     interactionSource = remember(messageKey) { androidx.compose.foundation.interaction.MutableInteractionSource() },
                     indication = null,
@@ -258,21 +285,22 @@ fun ChatMessage(
                 shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomEnd = 6.dp, bottomStart = 22.dp),
             ) {
                 Column(
-                    Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     if (attachments.isNotEmpty()) MessageAttachmentPreviews(attachments)
                     if (displayText.isNotBlank()) SelectionContainer {
                         Text(displayText, color = colors.onSurface, style = KompiUi.typography.bodyLarge)
                     }
+                    if (deliveryStatus != null) ChatLucideIcon(
+                        if (deliveryStatus == OutgoingMessageStatus.Dispatching && !connected) OutgoingMessageStatus.Uncertain.icon else deliveryStatus.icon,
+                        null, Modifier.align(Alignment.End).size(16.dp),
+                        tint = if (deliveryStatus == OutgoingMessageStatus.Failed) colors.error else colors.onSurfaceVariant)
                 }
             }
-            if (deliveryStatus != null) Text(
-                deliveryStatus.label(connected),
-                modifier = Modifier.padding(horizontal = 8.dp),
-                style = KompiUi.typography.labelSmall,
-                color = if (deliveryStatus == OutgoingMessageStatus.Failed || deliveryStatus == OutgoingMessageStatus.Uncertain) colors.error else colors.onSurfaceVariant,
-            )
+            if (actionsVisible && deliveryStatus != null) com.kompi.app.ui.KompiTextButton(
+                onClick = { detailsOpen = true }, modifier = Modifier.heightIn(min = 48.dp)
+            ) { Text("Message details") }
             if (actionsVisible) MessageActions(
                 messageKey = messageKey,
                 source = text,

@@ -137,6 +137,8 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
     private val recentAndroidToolIds = linkedSetOf<String>()
     private val _pendingPromptOutbox = MutableStateFlow<List<SecureStore.PendingPrompt>>(emptyList())
     val pendingPromptOutbox = _pendingPromptOutbox.asStateFlow()
+    private val _observedWrites = MutableStateFlow<Map<String, String>>(emptyMap())
+    val observedWrites = _observedWrites.asStateFlow()
     private val _attachmentDispatchStages = MutableStateFlow<Map<String, AttachmentDispatchStage>>(emptyMap())
     val attachmentDispatchStages = _attachmentDispatchStages.asStateFlow()
     private val _phoneConversationsSupported = MutableStateFlow(false)
@@ -1907,6 +1909,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
                 scanMutex.withLock {
                     if (!canDrain() || !settingsReady()) return OutboxResult.Advance
                     if (!repository.beginPromptDispatch(hostId, pending.id)) return OutboxResult.Advance
+                    _observedWrites.update { it + (pending.id to attempt.id) }
                     awaiting[pending.id] = reply // Also covers an ACK racing write completion.
                 }
                 LocalDiagnostics.begin(LocalDiagnostics.Metric.SendToAck, pending.id)
@@ -1943,7 +1946,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
                 attempt.record(Stage.PhoneAttemptFailed)
                 if (failure is ScopedChatStreams.RouteLost) reply.route?.closed?.await()
                 if (failure is PermanentOutboxFailure) {
-                    repository.removePrompt(hostId, pending.id)
+                    repository.failBeforeDispatch(hostId, pending.id)
                     refreshPendingOutbox()
                     _events.emit(Event.Failure(pending.id, "attachment-permanent", failure.message ?: "Attachment cannot be sent"))
                     return OutboxResult.Advance
@@ -1952,6 +1955,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
                     sanitizeConnectionReason(failure.message), retryable = true, uncertain = writing))
                 return OutboxResult.Retry
             } finally {
+                _observedWrites.update { if (it[pending.id] == attempt.id) it - pending.id else it }
                 awaiting.remove(pending.id, reply)
                 audit.finish(attempt)
                 setAttachmentStage(pending.id, null)

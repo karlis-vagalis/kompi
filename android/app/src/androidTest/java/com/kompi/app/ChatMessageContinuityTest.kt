@@ -21,6 +21,7 @@ class ChatMessageContinuityTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
     private var pending by mutableStateOf(listOf("request-a" to "Keep this message visible"))
     private var requests by mutableStateOf(listOf(state("queued", "")))
+    private var dispatch by mutableStateOf("queued")
     private var connection by mutableStateOf("Live")
     private lateinit var store: PiSessionStore
     private var lastLines: List<TranscriptLine> = emptyList()
@@ -43,7 +44,7 @@ class ChatMessageContinuityTest {
         compose.setContent {
             val view by store.view.collectAsState()
             val echoes = remember { LocalMessageEchoes() }
-            val projection = buildTranscriptProjection(view, echoes.reconcile(view.conversationId, pending, requests), requests, emptyList())
+            val projection = buildTranscriptProjection(view, echoes.reconcile(view.conversationId, pending, requests), requests, emptyList(), outboxStates = mapOf("request-a" to dispatch))
             SideEffect { lastLines = projection.active }
             ChatBehaviorSurface(transcript = projection.active, connection = connection)
         }
@@ -53,30 +54,32 @@ class ChatMessageContinuityTest {
         compose.onNodeWithText("Keep this message visible").assertIsDisplayed()
         compose.runOnIdle { assertEquals(listOf("user:request-a"), lastLines.filter { it.fromUser }.map { it.key }) }
         if (status != null) {
-            compose.onNodeWithText(status).assertIsDisplayed()
+            compose.onNodeWithText(status).assertDoesNotExist()
             compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, status)).assertExists()
         }
     }
 
     @Test fun m1_m2_m3_delayedAcknowledgementReconnectAndEarlyCompletionKeepOneBubble() {
         mount()
-        assertOneBubble("Sending…")
+        assertOneBubble("Sending")
         // Virtual time proves a long delay cannot time out/hide the pending bubble.
         compose.mainClock.advanceTimeBy(10_000)
-        assertOneBubble("Sending…")
+        assertOneBubble("Sending")
         for (phase in listOf("Disconnected", "Connecting", "Synchronizing")) {
             compose.runOnIdle { connection = phase; store.reconnect() }
             assertOneBubble("Waiting for connection")
         }
-        compose.runOnIdle { connection = "Live"; requests = listOf(state("accepted")) }
-        assertOneBubble("Received by computer")
+        compose.runOnIdle { connection = "Live"; dispatch = "accepted"; requests = listOf(state("accepted")) }
+        assertOneBubble("Accepted by your computer")
         compose.runOnIdle { requests = listOf(state("queued")) }
-        assertOneBubble("Queued on computer")
+        assertOneBubble("Accepted by your computer")
         compose.runOnIdle { requests = listOf(state("running")) }
-        assertOneBubble("Running")
+        assertOneBubble("Accepted by your computer")
+        compose.onAllNodesWithContentDescription("Waiting for reply").assertCountEquals(1)
         // Room removes terminal outbox rows before the independent Pi content stream arrives.
         compose.runOnIdle { requests = listOf(state("completed")); pending = emptyList() }
-        assertOneBubble("Received by computer")
+        assertOneBubble("Accepted by your computer")
+        compose.onNodeWithContentDescription("Waiting for reply").assertDoesNotExist()
         compose.runOnIdle { store.accept(snapshot(epoch = "epoch-b")) }
         assertOneBubble()
         compose.runOnIdle { store.accept(frame("event", 1, JSONObject().put("type", "entry_appended").put("entry", entry("user-a")), epoch = "epoch-b")) }
@@ -101,7 +104,12 @@ class ChatMessageContinuityTest {
 
     @Test fun m2_q5_terminalFailureNeverDropsTheOriginalMessageOrPretendsItWasSent() {
         mount()
-        for ((outcome, label) in listOf("failed" to "Not completed", "uncertain" to "Delivery unconfirmed", "cancelled" to "Cancelled")) {
+        compose.runOnIdle { dispatch = "dispatching"; connection = "Disconnected" }
+        assertOneBubble("Delivery not confirmed")
+        compose.onNodeWithText("Check conversation").assertIsNotEnabled()
+        compose.onNodeWithText("Discard").assertDoesNotExist()
+        compose.onNodeWithText("Review draft").assertDoesNotExist()
+        for ((outcome, label) in listOf("failed" to "Accepted by your computer", "uncertain" to "Accepted by your computer", "host-cancelled" to "Accepted by your computer", "rejected" to "Message not accepted", "local-failure" to "Couldn’t send message")) {
             compose.runOnIdle { requests = listOf(state(outcome)); pending = emptyList() }
             assertOneBubble(label)
         }

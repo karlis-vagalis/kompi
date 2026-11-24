@@ -165,7 +165,7 @@ class LocalRepository(
     private val dao = database.localDao()
 
     private companion object {
-        val TERMINAL_OUTCOMES = setOf("completed", "failed", "cancelled", "uncertain", "rejected")
+        val TERMINAL_OUTCOMES = setOf("completed", "failed", "cancelled", "host-cancelled", "uncertain", "rejected", "discarded", "local-failure")
     }
 
     private data class PromptIntent(
@@ -294,7 +294,13 @@ class LocalRepository(
         }
     }
 
-    suspend fun removePrompt(hostId: String, requestId: String) = dao.removeOutbox(hostId, requestId)
+    suspend fun failBeforeDispatch(hostId: String, requestId: String) = database.withTransaction {
+        // A previous ambiguous write must never become a definitive local-only failure.
+        if (dao.outboxItem(hostId, requestId)?.state == "queued") {
+            dao.request(hostId, requestId)?.let { dao.putRequest(it.copy(outcome = "local-failure")) }
+            dao.removeOutbox(hostId, requestId)
+        }
+    }
 
     suspend fun discardUnacceptedPrompt(hostId: String, requestId: String): Boolean = database.withTransaction {
         val item = dao.outboxItem(hostId, requestId) ?: return@withTransaction false
@@ -302,7 +308,7 @@ class LocalRepository(
             "A message the computer may already be executing cannot be discarded"
         }
         dao.removeOutbox(hostId, requestId)
-        dao.request(hostId, requestId)?.let { dao.putRequest(it.copy(outcome = "cancelled")) }
+        dao.request(hostId, requestId)?.let { dao.putRequest(it.copy(outcome = "discarded")) }
         true
     }
 
@@ -413,6 +419,7 @@ class LocalRepository(
             "A request cannot move to another conversation"
         }
         val outcome = when {
+            summary.outcome == "cancelled" && (current == null || current.outcome == "cancelled" || current.outcome !in TERMINAL_OUTCOMES) -> "host-cancelled"
             current != null && current.outcome in TERMINAL_OUTCOMES -> current.outcome
             current?.outcome == "running" && summary.outcome in setOf("queued", "accepted") -> current.outcome
             else -> summary.outcome
@@ -451,9 +458,10 @@ class LocalRepository(
                 is com.kompi.app.protocol.generated.DurableEvent.RequestChanged -> reconcileRequest(hostId, event.payload.request)
                 is com.kompi.app.protocol.generated.DurableEvent.ResponseCompleted -> {
                     val completed = event.payload
+                    val outcome = if (completed.outcome == "cancelled") "host-cancelled" else completed.outcome
                     val current = request(hostId, completed.requestId)
-                    if (current == null) putRequest(RequestStateRow(hostId, completed.requestId, "", completed.outcome))
-                    else if (current.outcome !in TERMINAL_OUTCOMES) putRequest(current.copy(outcome = completed.outcome))
+                    if (current == null) putRequest(RequestStateRow(hostId, completed.requestId, "", outcome))
+                    else if (current.outcome !in TERMINAL_OUTCOMES) putRequest(current.copy(outcome = outcome))
                     removeOutbox(hostId, completed.requestId)
                 }
                 is com.kompi.app.protocol.generated.DurableEvent.SettingsChanged -> {

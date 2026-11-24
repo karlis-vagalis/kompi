@@ -74,7 +74,7 @@ class ConversationScreenTest {
         val submissions = mutableListOf<String>()
         compose.setContent {
             ChatBehaviorSurface(
-                transcript = listOf(TranscriptLine("", false, "active:pending", pendingPhase = com.kompi.app.chat.ReplyPendingPhase.Running)),
+                transcript = listOf(TranscriptLine("", false, "active:pending", waitingForReply = true)),
                 onSend = { text, _ -> submissions.add(text); "next-request" },
             )
         }
