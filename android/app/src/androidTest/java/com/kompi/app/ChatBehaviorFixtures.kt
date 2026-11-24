@@ -23,6 +23,8 @@ internal fun ChatBehaviorSurface(
     connection: String = "Live",
     peer: String? = "Behavior test host",
     initialDraft: String = "",
+    history: ChatHistory? = null,
+    onRefreshModels: () -> Unit = {},
     attachmentShareReceipt: StateFlow<AttachmentShareReceipt?> = MutableStateFlow(null),
     attachmentShareImporting: StateFlow<Boolean> = MutableStateFlow(false),
     appearance: AppTheme = AppTheme.System,
@@ -57,6 +59,9 @@ internal fun ChatBehaviorSurface(
             attachmentShareReceipt = attachmentShareReceipt,
             attachmentShareImporting = attachmentShareImporting,
             initialDraft = initialDraft,
+            historyLoadError = history?.error ?: false,
+            loadingHistory = history?.loading ?: false,
+            onRetryHistory = { history?.retry?.invoke() },
             onDraftChanged = onDraftChanged,
             onDiscardPrompt = onDiscard,
             sessionMessage = "",
@@ -72,7 +77,7 @@ internal fun ChatBehaviorSurface(
             confirmedConfiguration = null,
             modelsLoading = false,
             modelError = null,
-            onRefreshModels = {},
+            onRefreshModels = onRefreshModels,
             onSelectModel = {},
         )
         }

@@ -190,9 +190,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
             runCatching {
                 if (target == null) send(id("pi-snapshot"), V3Message.PiSnapshotGet)
                 else if (_concurrentConversationsSupported.value) {
-                    val chatStreams = outboxConnection?.chatStreams
-                    if (chatStreams?.negotiated == true) chatStreams.refreshProjection(target.id)
-                    else requestConversationSnapshot(target)
+                    outboxConnection?.chatStreams?.refreshProjection(target.id)
                 }
             }.onFailure { if (it !is CancellationException) _lastError.value = "Could not load Pi session" }
         } },
@@ -311,6 +309,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
             ready = false
             unifiedPushSupported = false
             pushConnectionSender = null
+            piSession.bindHost(pairing.machineId)
             requestedPairing = pairing
             modelCatalogHost = null
             _modelCatalog.value = null
@@ -492,7 +491,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
                                     throw WireFormatException("Unexpected session history request from computer")
                                 is V3Message.PiFrame -> receivePiFrame(outbox, null, message.frame)
                                 is V3Message.PiResetRequired -> {
-                                    if (!outbox.chatStreams.negotiated || focusedChat == null) piSession.resetRequired()
+                                    if (!_concurrentConversationsSupported.value || focusedChat == null) piSession.resetRequired()
                                     else outbox.chatStreams.resetPrimaryProjection()
                                 }
                                 is V3Message.PiSessionEmpty -> bindLegacyConversation(null)
@@ -868,7 +867,9 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
                 return frame.kind == "snapshot" && frame.last && piSession.installedSnapshot(frame)
             }
             try {
-                if (outbox.chatStreams.negotiated) outbox.chatStreams.acceptFrame(route, frame, ::apply)
+                if (outbox.chatStreams.negotiated || (target != null && _concurrentConversationsSupported.value)) {
+                    outbox.chatStreams.acceptFrame(route, frame, ::apply)
+                }
                 else if (target == null || target.id == frame.conversationId) apply()
                 pendingPiEvents.toList()
             } finally {
@@ -1025,6 +1026,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
     private suspend fun becomeReady(conn: Connection, peerId: String, conversations: Boolean) {
         Log.i(SYNC_TAG, "phase=sync_start conversations=$conversations")
         ready = true
+        piSession.bindHost(peerId)
         piSession.reconnect()
         synchronizationCaughtUp = false
         requestPagesComplete = false
@@ -1059,7 +1061,6 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
         Log.i(SYNC_TAG, "phase=live elapsed_ms=${android.os.SystemClock.elapsedRealtime()} generation=$generation")
         timingConnection?.ready()
         _state.value = "Live"
-        if (_modelCatalog.value == null && !_modelsLoading.value) scope.launch { refreshModels() }
         LocalDiagnostics.finish(LocalDiagnostics.Metric.ReconnectToLive)
         wakeOutbox()
     }
@@ -1212,8 +1213,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
                 focusedChat?.id != target.id) return
             outboxConnection ?: return
         }
-        if (connection.chatStreams.negotiated) connection.chatStreams.requestSnapshot(target.id)
-        else connection.send(id("selected-snapshot"), V3Message.PiConversationSnapshotGet(target.id))
+        connection.chatStreams.requestSnapshot(target.id, afterPending = true)
     }
 
     /** A saved snapshot can populate a writable pane without starting a runtime. */
@@ -1222,6 +1222,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
             val connection = checkNotNull(activeConnection)
             check(ready && _state.value == "Live" && _piArchiveSupported.value && store.selectedMachineId() == hostId)
             val selection = PiSessionStore(needSnapshot = {}, publicDelta = { _, _, _, _, _ -> }, settled = { _, _, _, _ -> })
+            selection.bindHost(hostId)
             selection.bindConversation(conversationId)
             val requestId = id("pi-archive")
             val stream = connection.openBi()
@@ -1445,7 +1446,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
             require(runCatching { UUID.fromString(stableId) }.isSuccess) { "Attachment prompt request IDs must be UUIDs" }
             require(uniqueAttachments.none { it.uploadId == stableId }) { "Prompt and upload IDs must be distinct" }
         }
-        ChatTiming.record(Stage.PhoneSubmit, request = stableId)
+        ChatTiming.record(Stage.PhoneSubmit, request = stableId, conversation = destination?.id)
         val hostId = store.selectedMachineId() ?: error("No selected computer")
         check(destination == null || destination.hostId == hostId) { "The selected computer changed. Your message was not sent." }
         repository.pendingPrompts(hostId).firstOrNull { it.requestId == stableId }?.let { existing ->
@@ -1698,7 +1699,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
         val audit: ChatTimingConnection,
     ) {
         private val jobs = CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.IO)
-        val chatStreams: ScopedChatStreams = ScopedChatStreams(jobs, connection, lifecycleLock, ::isCurrent, write, piSession::reconnect) {
+        val chatStreams: ScopedChatStreams = ScopedChatStreams(jobs, connection, lifecycleLock, ::isCurrent, write, piSession::beginSnapshot) {
             route, envelope -> receiveScopedEnvelope(this, route, envelope)
         }
         private val wakeups = Channel<Unit>(Channel.CONFLATED)
@@ -1747,7 +1748,7 @@ class IrohTransport(context: Context, private val store: SecureStore, private va
         }
 
         fun requestScopedSnapshot(chat: String) {
-            if (chatStreams.negotiated) jobs.launch { chatStreams.requestSnapshot(chat, onlyIfMissing = true) }
+            if (_concurrentConversationsSupported.value) jobs.launch { chatStreams.requestSnapshot(chat, onlyIfMissing = true) }
         }
 
         suspend fun sendChat(chat: String, id: String, message: V3Message) {

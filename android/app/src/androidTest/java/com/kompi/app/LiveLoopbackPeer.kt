@@ -33,6 +33,10 @@ internal class LiveLoopbackPeer private constructor(private val endpoint: Endpoi
     val cancellations = CopyOnWriteArrayList<String>()
     val summaries = ConcurrentHashMap<String, RequestSummary>()
     val errors = CopyOnWriteArrayList<Throwable>()
+    val modelRequests = java.util.concurrent.atomic.AtomicInteger()
+    val targetedReads = CopyOnWriteArrayList<String>()
+    @Volatile var independentChats = false
+    @Volatile var targetedSnapshot: String? = null
     @Volatile var acknowledgePrompts = true
     @Volatile var cursor = "0"
     @Volatile var onPrompt: ((EnvelopeV3) -> Unit)? = null
@@ -62,7 +66,7 @@ internal class LiveLoopbackPeer private constructor(private val endpoint: Endpoi
                             when (val message = envelope.message) {
                                 is WireMessage.Hello -> {
                                     require(message.endpoint == IrohEndpointIdentity.fromBytes(connection.remoteId().toBytes()))
-                                    send(EnvelopeV3(id = envelope.id, message = WireMessage.Hello(listOf("prompt", "cancel", "phone-conversations", "pi-session-events", "pi-rpc-ui", UNIFIED_PUSH_CAPABILITY), hostId, 1800)))
+                                    send(EnvelopeV3(id = envelope.id, message = WireMessage.Hello(listOf("prompt", "cancel", "phone-conversations", "pi-session-events", "pi-rpc-ui", UNIFIED_PUSH_CAPABILITY) + (if (independentChats) listOf("concurrent-conversations") else emptyList()), hostId, 1800)))
                                     send(EnvelopeV3(id = envelope.id, message = WireMessage.Ack(state = "accepted", idleTimeoutSeconds = 1800)))
                                 }
                                 is WireMessage.Pair -> {
@@ -74,7 +78,22 @@ internal class LiveLoopbackPeer private constructor(private val endpoint: Endpoi
                                 is WireMessage.SyncPage -> send(EnvelopeV3(id = envelope.id, message = WireMessage.SyncEvents(emptyList(), cursor)))
                                 is WireMessage.SessionPage -> send(EnvelopeV3(id = envelope.id, message = WireMessage.SessionPageResult(sessions = emptyList())))
                                 is WireMessage.RequestPage -> send(EnvelopeV3(id = envelope.id, message = WireMessage.RequestPageResult(requests = summaries.values.toList())))
-                                WireMessage.ModelsGet -> send(EnvelopeV3(id = envelope.id, message = WireMessage.ModelsResult(ModelCatalog(configuration, emptyList()))))
+                                WireMessage.ModelsGet -> {
+                                    modelRequests.incrementAndGet()
+                                    send(EnvelopeV3(id = envelope.id, message = WireMessage.ModelsResult(ModelCatalog(configuration, emptyList()))))
+                                }
+                                is WireMessage.ConversationPrompt -> {
+                                    require(independentChats && message.conversationId == conversationId)
+                                    prompts += envelope
+                                    summaries[envelope.id] = RequestSummary(configuration, conversationId, 0, "accepted", envelope.id)
+                                    send(EnvelopeV3(id = envelope.id, message = WireMessage.Ack(configuration, conversationId, state = "accepted")))
+                                }
+                                is WireMessage.PiConversationSnapshotGet -> {
+                                    require(independentChats && message.conversationId == conversationId)
+                                    targetedReads += message.conversationId
+                                    targetedSnapshot?.let { json -> send(EnvelopeV3(id = envelope.id, message = WireMessage.PiFrame(PiFrame(
+                                        conversationId, "controlled-epoch", json, "snapshot", true, 0, envelope.id, 1, snapshotSessionId)))) }
+                                }
                                 WireMessage.PiSnapshotGet -> {
                                     val owner = snapshotConversationId
                                     val snapshot = if (owner == null) WireMessage.PiSessionEmpty else WireMessage.PiFrame(PiFrame(

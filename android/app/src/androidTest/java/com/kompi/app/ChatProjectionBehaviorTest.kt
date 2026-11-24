@@ -109,7 +109,13 @@ class ChatProjectionBehaviorTest {
         accept(event(3, "message_start", message("assistant", "")))
         accept(update(4, "text_start"))
         accept(update(5, "text_delta", "Buffered answer"))
-        accept(snapshot(2, listOf(entry("user-a", null, "user", "Original instruction"))))
+        // Promoting a first-turn draft can request its base after text was already buffered.
+        // Beginning that read is not a disconnect: keep the suffix and acknowledge the base
+        // by installed sequence, even though replay advances the live sequence to 5.
+        compose.runOnIdle { store.beginSnapshot() }
+        val base = snapshot(2, listOf(entry("user-a", null, "user", "Original instruction")))
+        accept(base)
+        compose.runOnIdle { assertTrue(store.installedSnapshot(base)) }
         compose.onNodeWithText("Original instruction").assertIsDisplayed()
         compose.onNodeWithText("Buffered answer").assertIsDisplayed()
         compose.runOnIdle {

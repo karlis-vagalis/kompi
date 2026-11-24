@@ -49,6 +49,11 @@ internal class ScopedChatStreams(
     private var focused: String? = null
     private var focusGeneration = 0L
     private var projection: Projection? = null
+        set(value) {
+            val old = field
+            field = value
+            if (old is Projection.Pending && old !== value) old.finished.complete(Unit)
+        }
     private var knownActive = false
     private var recoveryAttempts = 0
     private var primaryDeadline: Job? = null
@@ -56,6 +61,7 @@ internal class ScopedChatStreams(
     private sealed interface Projection {
         val route: Route? // null denotes primary
         class Pending(override val route: Route?, val request: String) : Projection {
+            val finished = CompletableDeferred<Unit>()
             private var header: PiFrame? = null
             private var next = 0L
 
@@ -97,7 +103,7 @@ internal class ScopedChatStreams(
 
         suspend fun read() {
             try {
-                connection.openBi().use { stream ->
+                withTimeout(5_000) { connection.openBi() }.use { stream ->
                     stream.send().use { send ->
                         stream.recv().use { recv ->
                             try {
@@ -210,14 +216,35 @@ internal class ScopedChatStreams(
     /** Called only for a known active runtime, including after the first draft prompt's acceptance. */
     suspend fun requestSnapshot(
         chat: String, onlyIfMissing: Boolean = false, forcePrimary: Boolean = false, expectedSelection: Long? = null,
+        afterPending: Boolean = false,
     ) {
+        if (afterPending) {
+            // A read already underway can predate the terminal ledger event. Its base is
+            // not the reconciliation read requested by this caller. Never resend the prompt.
+            val prior = synchronized(lock) {
+                if (!current() || focused != chat) return
+                (projection as? Projection.Pending)?.let {
+                    if (it.route != null) it.finished to focusGeneration else {
+                        // Primary snapshots have independent IDs. Supersede a stalled pre-terminal
+                        // read; its late fragments cannot satisfy the new request.
+                        projection = null
+                        primaryDeadline?.cancel()
+                        null
+                    }
+                }
+            }
+            if (prior != null) {
+                prior.first.await()
+                return requestSnapshot(chat, expectedSelection = prior.second)
+            }
+        }
         val selection = synchronized(lock) {
             if (!current() || focused != chat || (expectedSelection != null && expectedSelection != focusGeneration)) return
             knownActive = true
             if (projection is Projection.Pending || (onlyIfMissing && projection != null)) return
             focusGeneration
         }
-        val route = if (forcePrimary) synchronized(lock) { routes[chat]?.takeIf { it.isCurrent() && it.opened.isCompleted } } else route(chat)
+        val route = if (forcePrimary) null else route(chat)
         val id = "scoped-snapshot-${UUID.randomUUID()}"
         val pending = synchronized(lock) {
             if (!current() || focusGeneration != selection || projection is Projection.Pending || (onlyIfMissing && projection != null)) return
@@ -277,6 +304,15 @@ internal class ScopedChatStreams(
         if (pending?.route === route && pending?.request == id) {
             if (route == null) primaryDeadline?.cancel()
             projection = null
+            val chat = focused
+            val selection = focusGeneration
+            if (chat != null && current() && knownActive && recoveryAttempts < 2) {
+                val backoff = 300L * ++recoveryAttempts
+                jobs.launch {
+                    delay(backoff)
+                    requestSnapshot(chat, onlyIfMissing = true, forcePrimary = true, expectedSelection = selection)
+                }
+            }
         }
     }
 
@@ -294,7 +330,11 @@ internal class ScopedChatStreams(
         val state = projection
         if (focused == frame.conversationId && state != null && state.route === route) {
             when (state) {
-                is Projection.Pending -> if (frame.kind == "snapshot" && frame.requestId == state.request) {
+                is Projection.Pending -> if (frame.kind != "snapshot") {
+                    // A first turn may advance while its requested base is in flight. The
+                    // session store buffers this selected route's suffix behind that barrier.
+                    apply()
+                } else if (frame.requestId == state.request) {
                     state.accept(frame)
                     val installed = apply()
                     if (frame.last) {
@@ -304,7 +344,7 @@ internal class ScopedChatStreams(
                             return
                         }
                         if (route == null) primaryDeadline?.cancel()
-                        else recoveryAttempts = 0
+                        recoveryAttempts = 0
                         projection = Projection.Live(route)
                         Log.i(TAG, "snapshot_ready chat=${frame.conversationId} scoped=${route != null}")
                     }

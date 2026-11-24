@@ -456,14 +456,10 @@ private fun KompiApp(
             }
         }
     }
-    LaunchedEffect(focusedChat, displayedSession?.conversationId) {
-        val target = focusedChat ?: return@LaunchedEffect
-        if (target.createIfMissing && displayedSession?.conversationId == target.id) {
-            val persisted = ConversationTarget.saved(target.hostId, target.id)
-            drafts.select(persisted)
-            transport.focusConversation(persisted)
-            focusedChat = persisted
-        }
+    PromoteRecordedChat(focusedChat, displayedSession?.conversationId) { persisted ->
+        drafts.select(persisted)
+        transport.focusConversation(persisted)
+        focusedChat = persisted
     }
     LaunchedEffect(selectedMachineKey, sidebarOpen, connectionState, hostHistorySupported, historyRefresh) {
         if (!sidebarOpen || connectionState != "Live" || !hostHistorySupported) return@LaunchedEffect
@@ -534,31 +530,18 @@ private fun KompiApp(
     LaunchedEffect(unacceptedPromptIds) {
         transientPromptIds.retainAll(unacceptedPromptIds)
     }
-    val livePi by transport.piSession.view.collectAsState()
+    val receivedPi by transport.piSession.view.collectAsState()
+    val livePi = receivedPi.takeIf { it.hostId == selectedMachineKey } ?: com.kompi.app.transport.PiSessionStore.View()
     val catalogSession = remember(hostHistory, displayedId) { hostHistory?.firstOrNull { it.conversationId == displayedId } }
     val remoteState = displayedSession?.state ?: catalogSession?.state?.wire
-    var snapshotError by remember(focusedChat?.id, selectedMachineKey) { mutableStateOf(false) }
-    var snapshotRetry by remember(focusedChat?.id, selectedMachineKey) { mutableIntStateOf(0) }
-    val savedPi = key(selectedMachineKey, focusedChat?.id) {
-        val view by produceState<com.kompi.app.transport.PiSessionStore.View?>(null, focusedChat, remoteState, connectionState, snapshotRetry) {
-            val target = focusedChat ?: return@produceState
-            snapshotError = false
-            if (connectionState != "Live" || !concurrentSupported) return@produceState
-            try {
-                if (remoteState == ConversationState.Active.wire) transport.requestConversationSnapshot(target)
-                else if (!target.createIfMissing && piArchiveSupported) value = transport.loadArchivedChat(target.hostId, target.id)
-            } catch (cancelled: kotlinx.coroutines.TimeoutCancellationException) { snapshotError = true }
-            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-            catch (_: Exception) { snapshotError = true }
-        }
-        view
+    val finishedRequests = remember(displayedRequests, selectedMachineKey) {
+        displayedRequests.filter { it.hostId == selectedMachineKey && it.outcome == "completed" }.map { it.requestId }.toSet()
     }
-    val piSession = if (focusedChat == null) livePi else {
-        livePi.takeIf { it.conversationId == displayedId && !it.loading && remoteState == ConversationState.Active.wire }
-            ?: savedPi?.takeIf { it.conversationId == displayedId }
-            ?: livePi.takeIf { it.conversationId == displayedId }
-            ?: com.kompi.app.transport.PiSessionStore.View(conversationId = displayedId)
-    }
+    val historyPane = rememberChatHistory(focusedChat, livePi, transport.piSession.view, remoteState, connectionState,
+        concurrentSupported, piArchiveSupported, finishedRequests, transport::requestConversationSnapshot,
+        { transport.loadArchivedChat(it.hostId, it.id) },
+        displayedRequests.filter { it.hostId == selectedMachineKey && it.outcome in setOf("accepted", "running") }.map { it.requestId }.toSet())
+    val piSession = historyPane.view
     val deliveryNotices by localViewModel.notices.collectAsState()
     val pendingPiPrompts = remember(scopedOutbox, localRepository, selectedMachineKey) {
         scopedOutbox.filter { it.hostId == selectedMachineKey }.map { it.requestId to it.text }
@@ -575,8 +558,9 @@ private fun KompiApp(
         value = pendingFileIds.mapValues { (_, ids) -> ids.mapNotNull { cached[it]?.let(MessageAttachment::Local) } }
     }
     val localEchoes = remember(selectedMachineKey, focusedChat?.id) { LocalMessageEchoes() }
-    val transcriptProjection = remember(piSession, pendingPiPrompts, displayedRequests, deliveryNotices, pendingAttachments, pendingFileIds, attachmentDispatchStages, heldPromptIds) {
+    val transcriptProjection = remember(piSession, historyPane.coveredCompletions, pendingPiPrompts, displayedRequests, deliveryNotices, pendingAttachments, pendingFileIds, attachmentDispatchStages, heldPromptIds) {
         val echoes = localEchoes.reconcile(piSession.conversationId, pendingPiPrompts, displayedRequests)
+            .filterNot { it.first in historyPane.coveredCompletions }
         buildTranscriptProjection(piSession, echoes.filterNot { it.first in heldPromptIds }, displayedRequests.filterNot { it.requestId in heldPromptIds }, deliveryNotices,
             pendingAttachments, pendingFileIds.mapValues { it.value.size }, attachmentDispatchStages)
     }
@@ -1256,9 +1240,9 @@ private fun KompiApp(
                 onDraftChanged = { draft -> drafts.save(draftScope, draft) },
                 onDiscardPrompt = { requestId -> transport.discardUnacceptedPrompt(requestId) },
                 sessionMessage = sessionRefreshMessage,
-                historyLoadError = snapshotError,
-                onRetryHistory = { snapshotRetry++ },
-                loadingHistory = focusedChat?.createIfMissing == false && piSession.loading && connectionState == "Live",
+                historyLoadError = historyPane.error,
+                onRetryHistory = historyPane.retry,
+                loadingHistory = historyPane.loading,
                 onNewChat = {
                     if (focusedChat != null) focusChat(ConversationTarget.new(selectedMachineKey))
                     else {
@@ -2199,9 +2183,9 @@ internal fun ConversationScreen(
         ) {
             if (sessionMessage.isNotBlank()) Text(sessionMessage, style = KompiUi.typography.bodySmall, color = KompiUi.colors.error)
             if (historyLoadError) {
-                Text("Couldn’t load earlier messages.", style = KompiUi.typography.bodySmall, color = KompiUi.colors.error)
+                Text("Couldn’t load this conversation.", style = KompiUi.typography.bodySmall, color = KompiUi.colors.error)
                 TextButton(onClick = onRetryHistory) { Text("Retry") }
-            } else if (loadingHistory) Text("Loading earlier messages…", style = KompiUi.typography.bodySmall)
+            } else if (loadingHistory) Text("Loading conversation…", style = KompiUi.typography.bodySmall)
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
         if (visibleTranscript.isEmpty()) {

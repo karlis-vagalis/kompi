@@ -51,7 +51,7 @@ class PiSessionStore(
     }
     data class View(val sessionId: String? = null, val conversationId: String? = null, val leafId: String? = null,
         val lines: List<Line> = emptyList(), val loading: Boolean = true, val representedRequests: Set<String> = emptySet(),
-        val sessionName: String? = null)
+        val sessionName: String? = null, val snapshotRevision: Long = 0, val hostId: String? = null)
     private data class Entry(val id: String, val parentId: String?, val raw: JSONObject, val details: Details)
     private data class Record(val frame: PiFrame, val value: JSONObject, val connection: String?, val origin: Origin)
     private data class UpdateWindow(val request: String, val conversation: String, val epoch: String,
@@ -157,6 +157,13 @@ class PiSessionStore(
     }
     private val _view = MutableStateFlow(View())
     val view: StateFlow<View> = _view
+    private var hostId: String? = null
+    @Synchronized internal fun bindHost(id: String) {
+        if (id != hostId) {
+            hostId = id
+            clear()
+        }
+    }
     private var entries = linkedMapOf<String, Entry>()
     private var sessionName: String? = null
     private fun Entry.piName(): String? = raw.optString("name").trim().takeIf {
@@ -178,6 +185,9 @@ class PiSessionStore(
     private var leaf: String? = null
     private var conversation: String? = null
     private var session: String? = null
+    // Ledger updates never advance this transcript installation barrier.
+    private var snapshotRevision = 0L
+    private var installedSequence = -1L
     private var sequence = -1L
     private var waiting = true
     private var requested = false
@@ -197,7 +207,15 @@ class PiSessionStore(
 
     @Synchronized internal fun installedSnapshot(frame: PiFrame): Boolean =
         !waiting && conversation == frame.conversationId && session == frame.sessionId &&
-            epoch == frame.epoch && sequence == frame.sequence
+            epoch == frame.epoch && installedSequence == frame.sequence
+
+    /** Requesting the base again on the same connection must not discard a first
+     * turn already buffered behind that base. A real reconnect still drops the suffix. */
+    @Synchronized fun beginSnapshot() {
+        if (!waiting) reconnect()
+        else parts.entries.removeAll { it.value.first.kind == "snapshot" }
+        requested = true
+    }
 
     @Synchronized fun reconnect() {
         flushTimingUpdates()
@@ -308,6 +326,8 @@ class PiSessionStore(
         require(snapshotLeaf == null || snapshotLeaf in fresh) { "Pi snapshot has an unknown active leaf" }
         entries = fresh; sessionName = fresh.values.asSequence().mapNotNull { it.piName() }.lastOrNull(); rowCache.clear(); renderKeys.clear(); active = null; completedLive.clear()
         if (session != record.frame.sessionId || epoch != record.frame.epoch) canonicalResponses.clear()
+        installedSequence = record.frame.sequence
+        snapshotRevision++
         canonicalSequence = record.frame.sequence
         session = record.frame.sessionId; conversation = record.frame.conversationId
         epoch = record.frame.epoch; sequence = record.frame.sequence; leaf = snapshotLeaf
@@ -617,6 +637,6 @@ class PiSessionStore(
             lines.addAll(assistantRows(live.key, message, Details(message), live.key, !live.complete,
                 if (live.complete) null else live::titles, live.origin == LiveOrigin.ResumedSuffix))
         }
-        _view.value = View(session, conversation, leaf, compactToolCalls(lines), waiting, represented.toSet(), sessionName)
+        _view.value = View(session, conversation, leaf, compactToolCalls(lines), waiting, represented.toSet(), sessionName, snapshotRevision, hostId)
     }
 }
